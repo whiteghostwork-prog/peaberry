@@ -36,3 +36,14 @@ target_link_libraries(peaberry_hello_vk PRIVATE peaberry_example_wsi m)
 set_target_properties(peaberry_hello_vk PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
 )
+
+add_executable(peaberry_triangle triangle/main.c)
+target_link_libraries(peaberry_triangle PRIVATE peaberry_example_wsi m)
+target_compile_definitions(peaberry_triangle PRIVATE
+    PEABERRY_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders"
+)
+add_dependencies(peaberry_triangle peaberry_shaders)
+
+set_target_properties(peaberry_triangle PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
+)

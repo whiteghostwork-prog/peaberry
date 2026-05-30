@@ -24,6 +24,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(volk)
 
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CompileGlsl.cmake)
+
+peaberry_compile_glsl(PEABERRY_SHADER_SPIRV
+    TARGET peaberry_shaders
+    SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag
+)
+
 add_subdirectory(src)
 
 if(PEABERRY_BUILD_EXAMPLES)

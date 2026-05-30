@@ -18,6 +18,7 @@
 #define PEABERRY_EXAMPLE_WSI_H
 
 #include "peaberry/peaberry.h"
+#include "peaberry/peaberry_vk.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -40,5 +41,9 @@ void *pb_example_wsi_window(const pb_example_wsi *wsi);
 
 bool pb_example_wsi_begin_frame(pb_example_wsi *wsi, float r, float g, float b, float a);
 bool pb_example_wsi_end_frame(pb_example_wsi *wsi);
+
+VkRenderPass pb_example_wsi_render_pass(const pb_example_wsi *wsi);
+VkExtent2D pb_example_wsi_extent(const pb_example_wsi *wsi);
+VkCommandBuffer pb_example_wsi_command_buffer(const pb_example_wsi *wsi);
 
 #endif

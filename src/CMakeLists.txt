@@ -5,7 +5,11 @@ add_library(peaberry STATIC
     core/log.c
     pb_context.c
     vk/context.c
+    rhi/shader.c
+    rhi/triangle.c
 )
+
+add_dependencies(peaberry peaberry_shaders)
 
 target_include_directories(peaberry
     PUBLIC

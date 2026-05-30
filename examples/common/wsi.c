@@ -640,18 +640,41 @@ bool pb_example_wsi_begin_frame(pb_example_wsi *wsi, float r, float g, float b, 
     };
 
     vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdEndRenderPass(cmd);
-
-    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-        return false;
-    }
-
     return true;
+}
+
+VkRenderPass pb_example_wsi_render_pass(const pb_example_wsi *wsi)
+{
+    return wsi ? wsi->render_pass : VK_NULL_HANDLE;
+}
+
+VkExtent2D pb_example_wsi_extent(const pb_example_wsi *wsi)
+{
+    VkExtent2D extent = {0, 0};
+    if (wsi) {
+        extent = wsi->extent;
+    }
+    return extent;
+}
+
+VkCommandBuffer pb_example_wsi_command_buffer(const pb_example_wsi *wsi)
+{
+    if (!wsi) {
+        return VK_NULL_HANDLE;
+    }
+    return wsi->command_buffers[wsi->frame_index];
 }
 
 bool pb_example_wsi_end_frame(pb_example_wsi *wsi)
 {
     if (!wsi) {
+        return false;
+    }
+
+    VkCommandBuffer cmd = wsi->command_buffers[wsi->frame_index];
+    vkCmdEndRenderPass(cmd);
+
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         return false;
     }
 
