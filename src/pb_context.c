@@ -18,13 +18,10 @@
 #include "peaberry/peaberry_vk.h"
 
 #include "core/log.h"
+#include "pb_context_internal.h"
 #include "vk/context.h"
 
 #include <stdlib.h>
-
-struct pb_context {
-    pb_vk_context vk;
-};
 
 pb_context *pb_context_create(const pb_context_desc *desc)
 {
@@ -117,4 +114,13 @@ uint32_t pb_context_present_queue_family(const pb_context *ctx)
 bool pb_context_device_ready(const pb_context *ctx)
 {
     return ctx && ctx->vk.device != VK_NULL_HANDLE;
+}
+
+void pb_context_wait_device_idle(pb_context *ctx)
+{
+    if (!pb_context_device_ready(ctx)) {
+        return;
+    }
+
+    vkDeviceWaitIdle(ctx->vk.device);
 }

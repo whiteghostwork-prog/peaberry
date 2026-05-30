@@ -17,7 +17,7 @@
 #include "peaberry/peaberry.h"
 #include "peaberry/peaberry_render.h"
 
-#include "../common/wsi.h"
+#include "wsi.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -96,7 +96,8 @@ int main(void)
             pb_triangle_pass_record(
                 triangle,
                 pb_example_wsi_command_buffer(wsi),
-                pb_example_wsi_extent(wsi));
+                pb_example_wsi_extent(wsi),
+                (float)glfwGetTime());
             pb_example_wsi_end_frame(wsi);
         }
     }

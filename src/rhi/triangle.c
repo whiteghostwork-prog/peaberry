@@ -16,90 +16,141 @@
 
 #include "peaberry/peaberry_render.h"
 
+#include "peaberry/peaberry_math.h"
+#include "rhi/buffer.h"
+
 #include "core/log.h"
+#include "pb_context_internal.h"
+#include "peaberry/peaberry_vk.h"
 #include "rhi/shader.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 typedef struct pb_triangle_vertex {
-    float pos[2];
+    float pos[3];
     float color[3];
 } pb_triangle_vertex;
+
+typedef struct pb_triangle_frame_data {
+    pb_mat4 mvp;
+} pb_triangle_frame_data;
 
 struct pb_triangle_pass {
     pb_context *context;
     VkPipeline pipeline;
     VkPipelineLayout pipeline_layout;
-    VkBuffer vertex_buffer;
-    VkDeviceMemory vertex_memory;
+    VkDescriptorSetLayout descriptor_set_layout;
+    VkDescriptorPool descriptor_pool;
+    VkDescriptorSet descriptor_set;
+    pb_rhi_buffer vertex_buffer;
+    pb_rhi_buffer uniform_buffer;
     VkShaderModule vert_module;
     VkShaderModule frag_module;
 };
 
 static const pb_triangle_vertex k_triangle_vertices[] = {
-    { { 0.0f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
-    { { 0.5f, 0.5f }, { 0.0f, 1.0f, 0.0f } },
-    { { -0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } },
+    { { 0.0f, -0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f } },
+    { { 0.5f, 0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f } },
+    { { -0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f } },
 };
 
 static bool create_vertex_buffer(struct pb_triangle_pass *pass)
 {
-    VkDevice device = pb_context_device(pass->context);
-    VkDeviceSize size = sizeof(k_triangle_vertices);
-
-    VkBufferCreateInfo buffer_info = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = size,
+    pb_rhi_buffer_desc desc = {
+        .size = sizeof(k_triangle_vertices),
         .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
     };
 
-    if (vkCreateBuffer(device, &buffer_info, NULL, &pass->vertex_buffer) != VK_SUCCESS) {
+    if (!pb_rhi_buffer_create(pass->context, &desc, &pass->vertex_buffer)) {
         return false;
     }
 
-    VkMemoryRequirements mem_requirements;
-    vkGetBufferMemoryRequirements(device, pass->vertex_buffer, &mem_requirements);
+    return pb_rhi_buffer_upload(
+        pass->context,
+        &pass->vertex_buffer,
+        k_triangle_vertices,
+        sizeof(k_triangle_vertices));
+}
 
-    uint32_t memory_type_index = UINT32_MAX;
-    VkPhysicalDeviceMemoryProperties mem_properties;
-    vkGetPhysicalDeviceMemoryProperties(pb_context_physical_device(pass->context), &mem_properties);
-
-    for (uint32_t i = 0; i < mem_properties.memoryTypeCount; ++i) {
-        if ((mem_requirements.memoryTypeBits & (1u << i)) &&
-            (mem_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-            (mem_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            memory_type_index = i;
-            break;
-        }
-    }
-
-    if (memory_type_index == UINT32_MAX) {
-        return false;
-    }
-
-    VkMemoryAllocateInfo alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = mem_requirements.size,
-        .memoryTypeIndex = memory_type_index,
+static bool create_uniform_buffer(struct pb_triangle_pass *pass)
+{
+    pb_rhi_buffer_desc desc = {
+        .size = sizeof(pb_triangle_frame_data),
+        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
     };
 
-    if (vkAllocateMemory(device, &alloc_info, NULL, &pass->vertex_memory) != VK_SUCCESS) {
+    return pb_rhi_buffer_create(pass->context, &desc, &pass->uniform_buffer);
+}
+
+static bool create_descriptor_set_layout(struct pb_triangle_pass *pass)
+{
+    VkDescriptorSetLayoutBinding binding = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+    };
+
+    VkDescriptorSetLayoutCreateInfo layout_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &binding,
+    };
+
+    VkDevice device = pb_context_device(pass->context);
+    return vkCreateDescriptorSetLayout(device, &layout_info, NULL, &pass->descriptor_set_layout) == VK_SUCCESS;
+}
+
+static bool create_descriptor_pool_and_set(struct pb_triangle_pass *pass)
+{
+    VkDevice device = pb_context_device(pass->context);
+
+    VkDescriptorPoolSize pool_size = {
+        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+    };
+
+    VkDescriptorPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 1,
+        .poolSizeCount = 1,
+        .pPoolSizes = &pool_size,
+    };
+
+    if (vkCreateDescriptorPool(device, &pool_info, NULL, &pass->descriptor_pool) != VK_SUCCESS) {
         return false;
     }
 
-    if (vkBindBufferMemory(device, pass->vertex_buffer, pass->vertex_memory, 0) != VK_SUCCESS) {
+    VkDescriptorSetAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = pass->descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &pass->descriptor_set_layout,
+    };
+
+    if (vkAllocateDescriptorSets(device, &alloc_info, &pass->descriptor_set) != VK_SUCCESS) {
         return false;
     }
 
-    void *mapped = NULL;
-    if (vkMapMemory(device, pass->vertex_memory, 0, size, 0, &mapped) != VK_SUCCESS) {
-        return false;
-    }
+    VkDescriptorBufferInfo buffer_info = {
+        .buffer = pb_rhi_buffer_handle(&pass->uniform_buffer),
+        .offset = 0,
+        .range = sizeof(pb_triangle_frame_data),
+    };
 
-    memcpy(mapped, k_triangle_vertices, sizeof(k_triangle_vertices));
-    vkUnmapMemory(device, pass->vertex_memory);
+    VkWriteDescriptorSet write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = pass->descriptor_set,
+        .dstBinding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &buffer_info,
+    };
+
+    vkUpdateDescriptorSets(device, 1, &write, 0, NULL);
     return true;
 }
 
@@ -137,7 +188,7 @@ static bool create_pipeline(struct pb_triangle_pass *pass, const pb_triangle_pas
         {
             .location = 0,
             .binding = 0,
-            .format = VK_FORMAT_R32G32_SFLOAT,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
             .offset = offsetof(pb_triangle_vertex, pos),
         },
         {
@@ -210,6 +261,8 @@ static bool create_pipeline(struct pb_triangle_pass *pass, const pb_triangle_pas
 
     VkPipelineLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &pass->descriptor_set_layout,
     };
 
     if (vkCreatePipelineLayout(device, &layout_info, NULL, &pass->pipeline_layout) != VK_SUCCESS) {
@@ -239,6 +292,35 @@ static bool create_pipeline(struct pb_triangle_pass *pass, const pb_triangle_pas
     return true;
 }
 
+static void update_frame_data(struct pb_triangle_pass *pass, VkExtent2D extent, float time_seconds)
+{
+    pb_mat4 model;
+    pb_mat4 view;
+    pb_mat4 proj;
+    pb_mat4 tmp;
+    pb_triangle_frame_data frame = {0};
+
+    pb_mat4_identity(model);
+    pb_mat4_rotate_y(model, time_seconds, model);
+
+    const pb_vec3 eye = { 0.0f, 0.0f, 2.0f };
+    const pb_vec3 center = { 0.0f, 0.0f, 0.0f };
+    const pb_vec3 up = { 0.0f, 1.0f, 0.0f };
+    pb_mat4_look_at(view, eye, center, up);
+
+    const float aspect = extent.height > 0 ? (float)extent.width / (float)extent.height : 1.0f;
+    pb_mat4_perspective(proj, pb_radians(45.0f), aspect, 0.1f, 10.0f);
+
+    pb_mat4_mul(proj, view, tmp);
+    pb_mat4_mul(tmp, model, frame.mvp);
+
+    pb_rhi_buffer_upload(
+        pass->context,
+        &pass->uniform_buffer,
+        &frame,
+        sizeof(frame));
+}
+
 pb_triangle_pass *pb_triangle_pass_create(const pb_triangle_pass_desc *desc)
 {
     if (!desc || !desc->context || !desc->render_pass || !desc->vert_spv_path || !desc->frag_spv_path) {
@@ -258,7 +340,11 @@ pb_triangle_pass *pb_triangle_pass_create(const pb_triangle_pass_desc *desc)
 
     pass->context = desc->context;
 
-    if (!create_pipeline(pass, desc) || !create_vertex_buffer(pass)) {
+    if (!create_descriptor_set_layout(pass) ||
+        !create_uniform_buffer(pass) ||
+        !create_descriptor_pool_and_set(pass) ||
+        !create_pipeline(pass, desc) ||
+        !create_vertex_buffer(pass)) {
         pb_triangle_pass_destroy(pass);
         return NULL;
     }
@@ -274,6 +360,8 @@ void pb_triangle_pass_destroy(pb_triangle_pass *pass)
     }
 
     if (pb_context_device_ready(pass->context)) {
+        pb_context_wait_device_idle(pass->context);
+
         VkDevice device = pb_context_device(pass->context);
 
         if (pass->pipeline) {
@@ -282,12 +370,14 @@ void pb_triangle_pass_destroy(pb_triangle_pass *pass)
         if (pass->pipeline_layout) {
             vkDestroyPipelineLayout(device, pass->pipeline_layout, NULL);
         }
-        if (pass->vertex_buffer) {
-            vkDestroyBuffer(device, pass->vertex_buffer, NULL);
+        if (pass->descriptor_pool) {
+            vkDestroyDescriptorPool(device, pass->descriptor_pool, NULL);
         }
-        if (pass->vertex_memory) {
-            vkFreeMemory(device, pass->vertex_memory, NULL);
+        if (pass->descriptor_set_layout) {
+            vkDestroyDescriptorSetLayout(device, pass->descriptor_set_layout, NULL);
         }
+        pb_rhi_buffer_destroy(pass->context, &pass->vertex_buffer);
+        pb_rhi_buffer_destroy(pass->context, &pass->uniform_buffer);
         if (pass->vert_module) {
             vkDestroyShaderModule(device, pass->vert_module, NULL);
         }
@@ -299,11 +389,17 @@ void pb_triangle_pass_destroy(pb_triangle_pass *pass)
     free(pass);
 }
 
-void pb_triangle_pass_record(pb_triangle_pass *pass, VkCommandBuffer cmd, VkExtent2D extent)
+void pb_triangle_pass_record(
+    pb_triangle_pass *pass,
+    VkCommandBuffer cmd,
+    VkExtent2D extent,
+    float time_seconds)
 {
     if (!pass || extent.width == 0 || extent.height == 0) {
         return;
     }
+
+    update_frame_data(pass, extent, time_seconds);
 
     VkViewport viewport = {
         .width = (float)extent.width,
@@ -318,8 +414,18 @@ void pb_triangle_pass_record(pb_triangle_pass *pass, VkCommandBuffer cmd, VkExte
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass->pipeline);
+    vkCmdBindDescriptorSets(
+        cmd,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        pass->pipeline_layout,
+        0,
+        1,
+        &pass->descriptor_set,
+        0,
+        NULL);
 
+    VkBuffer vertex_buffer = pb_rhi_buffer_handle(&pass->vertex_buffer);
     VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &pass->vertex_buffer, &offset);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);
     vkCmdDraw(cmd, 3, 1, 0, 0);
 }

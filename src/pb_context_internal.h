@@ -14,27 +14,14 @@
  * limitations under the License.
  */
 
-#ifndef PEABERRY_RENDER_H
-#define PEABERRY_RENDER_H
+#ifndef PEABERRY_PB_CONTEXT_INTERNAL_H
+#define PEABERRY_PB_CONTEXT_INTERNAL_H
 
-#include "peaberry/peaberry_vk.h"
+#include "peaberry/peaberry.h"
+#include "vk/context.h"
 
-typedef struct pb_triangle_pass pb_triangle_pass;
-
-typedef struct pb_triangle_pass_desc {
-    pb_context *context;
-    VkRenderPass render_pass;
-    const char *vert_spv_path;
-    const char *frag_spv_path;
-} pb_triangle_pass_desc;
-
-pb_triangle_pass *pb_triangle_pass_create(const pb_triangle_pass_desc *desc);
-void pb_triangle_pass_destroy(pb_triangle_pass *pass);
-
-void pb_triangle_pass_record(
-    pb_triangle_pass *pass,
-    VkCommandBuffer cmd,
-    VkExtent2D extent,
-    float time_seconds);
+struct pb_context {
+    pb_vk_context vk;
+};
 
 #endif

@@ -17,6 +17,7 @@
 #include "vk/context.h"
 
 #include "core/log.h"
+#include "rhi/alloc.h"
 
 #include <vulkan/vulkan_wayland.h>
 #include <stdlib.h>
@@ -270,7 +271,10 @@ bool pb_vk_context_init_instance(
 
 void pb_vk_context_shutdown(pb_vk_context *ctx)
 {
+    pb_rhi_alloc_shutdown(ctx);
+
     if (ctx->device) {
+        vkDeviceWaitIdle(ctx->device);
         vkDestroyDevice(ctx->device, NULL);
         ctx->device = VK_NULL_HANDLE;
     }
@@ -341,5 +345,12 @@ bool pb_vk_context_init_device(pb_vk_context *ctx, VkSurfaceKHR surface)
     volkLoadDevice(ctx->device);
     vkGetDeviceQueue(ctx->device, ctx->graphics_queue_family, 0, &ctx->graphics_queue);
     vkGetDeviceQueue(ctx->device, ctx->present_queue_family, 0, &ctx->present_queue);
+
+    if (!pb_rhi_alloc_init(ctx)) {
+        vkDestroyDevice(ctx->device, NULL);
+        ctx->device = VK_NULL_HANDLE;
+        return false;
+    }
+
     return true;
 }

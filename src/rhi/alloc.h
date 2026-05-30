@@ -14,27 +14,27 @@
  * limitations under the License.
  */
 
-#ifndef PEABERRY_RENDER_H
-#define PEABERRY_RENDER_H
+#ifndef PEABERRY_RHI_ALLOC_H
+#define PEABERRY_RHI_ALLOC_H
 
-#include "peaberry/peaberry_vk.h"
+#include "vk/context.h"
 
-typedef struct pb_triangle_pass pb_triangle_pass;
+#include <stdbool.h>
+#include <volk.h>
 
-typedef struct pb_triangle_pass_desc {
-    pb_context *context;
-    VkRenderPass render_pass;
-    const char *vert_spv_path;
-    const char *frag_spv_path;
-} pb_triangle_pass_desc;
+typedef enum pb_rhi_memory_usage {
+    PB_RHI_MEMORY_CPU_TO_GPU,
+    PB_RHI_MEMORY_GPU_ONLY,
+} pb_rhi_memory_usage;
 
-pb_triangle_pass *pb_triangle_pass_create(const pb_triangle_pass_desc *desc);
-void pb_triangle_pass_destroy(pb_triangle_pass *pass);
+bool pb_rhi_alloc_init(pb_vk_context *ctx);
+void pb_rhi_alloc_shutdown(pb_vk_context *ctx);
 
-void pb_triangle_pass_record(
-    pb_triangle_pass *pass,
-    VkCommandBuffer cmd,
-    VkExtent2D extent,
-    float time_seconds);
+uint32_t pb_rhi_find_memory_type(
+    const pb_vk_context *ctx,
+    uint32_t type_filter,
+    VkMemoryPropertyFlags properties);
+
+VkMemoryPropertyFlags pb_rhi_memory_properties(pb_rhi_memory_usage usage);
 
 #endif

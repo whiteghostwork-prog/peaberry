@@ -24,6 +24,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(volk)
 
+FetchContent_Declare(
+    cglm
+    GIT_REPOSITORY https://github.com/recp/cglm.git
+    GIT_TAG        v0.9.4
+)
+FetchContent_MakeAvailable(cglm)
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CompileGlsl.cmake)
 
 peaberry_compile_glsl(PEABERRY_SHADER_SPIRV

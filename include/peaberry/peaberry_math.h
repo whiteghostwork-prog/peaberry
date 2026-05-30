@@ -14,27 +14,22 @@
  * limitations under the License.
  */
 
-#ifndef PEABERRY_RENDER_H
-#define PEABERRY_RENDER_H
+#ifndef PEABERRY_MATH_H
+#define PEABERRY_MATH_H
 
-#include "peaberry/peaberry_vk.h"
+typedef float pb_mat4[4][4];
+typedef float pb_vec3[3];
 
-typedef struct pb_triangle_pass pb_triangle_pass;
+void pb_mat4_identity(pb_mat4 m);
+void pb_mat4_mul(pb_mat4 a, pb_mat4 b, pb_mat4 out);
+void pb_mat4_perspective(pb_mat4 m, float fovy_rad, float aspect, float near_z, float far_z);
+void pb_mat4_look_at(
+    pb_mat4 m,
+    const pb_vec3 eye,
+    const pb_vec3 center,
+    const pb_vec3 up);
+void pb_mat4_rotate_y(pb_mat4 m, float angle_rad, pb_mat4 out);
 
-typedef struct pb_triangle_pass_desc {
-    pb_context *context;
-    VkRenderPass render_pass;
-    const char *vert_spv_path;
-    const char *frag_spv_path;
-} pb_triangle_pass_desc;
-
-pb_triangle_pass *pb_triangle_pass_create(const pb_triangle_pass_desc *desc);
-void pb_triangle_pass_destroy(pb_triangle_pass *pass);
-
-void pb_triangle_pass_record(
-    pb_triangle_pass *pass,
-    VkCommandBuffer cmd,
-    VkExtent2D extent,
-    float time_seconds);
+float pb_radians(float degrees);
 
 #endif

@@ -16,7 +16,7 @@
 
 #include "peaberry/peaberry.h"
 
-#include "../common/wsi.h"
+#include "wsi.h"
 
 #include <math.h>
 #include <stdio.h>

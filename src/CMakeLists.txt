@@ -3,8 +3,11 @@
 
 add_library(peaberry STATIC
     core/log.c
+    core/math.c
     pb_context.c
     vk/context.c
+    rhi/alloc.c
+    rhi/buffer.c
     rhi/shader.c
     rhi/triangle.c
 )
@@ -27,4 +30,6 @@ target_link_libraries(peaberry
     PUBLIC
         volk
         Vulkan::Vulkan
+    PRIVATE
+        cglm
 )
