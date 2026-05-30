@@ -1,0 +1,7 @@
+build/
+.cache/
+compile_commands.json
+*.spv
+.DS_Store
+docs/
+README.md
