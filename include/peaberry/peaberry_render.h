@@ -37,4 +37,23 @@ void pb_triangle_pass_record(
     VkExtent2D extent,
     float time_seconds);
 
+typedef struct pb_quad_pass pb_quad_pass;
+
+typedef struct pb_quad_pass_desc {
+    pb_context *context;
+    VkRenderPass render_pass;
+    const char *vert_spv_path;
+    const char *frag_spv_path;
+    const char *texture_path;
+} pb_quad_pass_desc;
+
+pb_quad_pass *pb_quad_pass_create(const pb_quad_pass_desc *desc);
+void pb_quad_pass_destroy(pb_quad_pass *pass);
+
+void pb_quad_pass_record(
+    pb_quad_pass *pass,
+    VkCommandBuffer cmd,
+    VkExtent2D extent,
+    float time_seconds);
+
 #endif

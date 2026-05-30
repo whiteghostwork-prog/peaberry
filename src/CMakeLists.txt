@@ -8,7 +8,9 @@ add_library(peaberry STATIC
     vk/context.c
     rhi/alloc.c
     rhi/buffer.c
+    rhi/quad.c
     rhi/shader.c
+    rhi/texture.c
     rhi/triangle.c
 )
 
@@ -19,6 +21,7 @@ target_include_directories(peaberry
         ${CMAKE_CURRENT_SOURCE_DIR}/../include
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${stb_SOURCE_DIR}
 )
 
 target_compile_definitions(peaberry
