@@ -280,6 +280,12 @@ static bool create_pipeline(struct pb_quad_pass *pass, const pb_quad_pass_desc *
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
 
+    VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_FALSE,
+        .depthWriteEnable = VK_FALSE,
+    };
+
     VkPipelineColorBlendAttachmentState color_blend_attachment = {
         .colorWriteMask =
             VK_COLOR_COMPONENT_R_BIT |
@@ -313,6 +319,7 @@ static bool create_pipeline(struct pb_quad_pass *pass, const pb_quad_pass_desc *
         .pViewportState = &viewport_state,
         .pRasterizationState = &rasterization,
         .pMultisampleState = &multisample,
+        .pDepthStencilState = &depth_stencil,
         .pColorBlendState = &color_blend,
         .pDynamicState = &dynamic_state,
         .layout = pass->pipeline_layout,

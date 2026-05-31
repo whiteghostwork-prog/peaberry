@@ -8,10 +8,12 @@ add_library(peaberry STATIC
     vk/context.c
     rhi/alloc.c
     rhi/buffer.c
+    rhi/mesh.c
     rhi/quad.c
     rhi/shader.c
     rhi/texture.c
     rhi/triangle.c
+    pbr/sphere_pass.c
 )
 
 add_dependencies(peaberry peaberry_shaders)

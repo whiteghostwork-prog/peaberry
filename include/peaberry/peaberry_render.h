@@ -56,4 +56,25 @@ void pb_quad_pass_record(
     VkExtent2D extent,
     float time_seconds);
 
+typedef struct pb_sphere_pass pb_sphere_pass;
+
+typedef struct pb_sphere_pass_desc {
+    pb_context *context;
+    VkRenderPass render_pass;
+    const char *vert_spv_path;
+    const char *frag_spv_path;
+    float albedo[3];
+    float metallic;
+    float roughness;
+} pb_sphere_pass_desc;
+
+pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc);
+void pb_sphere_pass_destroy(pb_sphere_pass *pass);
+
+void pb_sphere_pass_record(
+    pb_sphere_pass *pass,
+    VkCommandBuffer cmd,
+    VkExtent2D extent,
+    float time_seconds);
+
 #endif

@@ -48,6 +48,10 @@ struct pb_example_wsi {
     float clear_color[4];
     uint32_t width;
     uint32_t height;
+    VkFormat depth_format;
+    VkImage depth_image;
+    VkDeviceMemory depth_memory;
+    VkImageView depth_view;
 };
 
 static void framebuffer_size_callback(GLFWwindow *window, int width, int height)
@@ -62,17 +66,151 @@ static void framebuffer_size_callback(GLFWwindow *window, int width, int height)
     wsi->framebuffer_resized = true;
 }
 
+static bool choose_depth_format(VkPhysicalDevice physical_device, VkFormat *out_format)
+{
+    const VkFormat candidates[] = {
+        VK_FORMAT_D32_SFLOAT,
+        VK_FORMAT_D32_SFLOAT_S8_UINT,
+        VK_FORMAT_D24_UNORM_S8_UINT,
+    };
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        VkFormatProperties props;
+        vkGetPhysicalDeviceFormatProperties(physical_device, candidates[i], &props);
+        if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+            *out_format = candidates[i];
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void destroy_depth_resources(pb_example_wsi *wsi)
+{
+    VkDevice device = pb_context_device(wsi->context);
+
+    if (wsi->depth_view) {
+        vkDestroyImageView(device, wsi->depth_view, NULL);
+        wsi->depth_view = VK_NULL_HANDLE;
+    }
+    if (wsi->depth_image) {
+        vkDestroyImage(device, wsi->depth_image, NULL);
+        wsi->depth_image = VK_NULL_HANDLE;
+    }
+    if (wsi->depth_memory) {
+        vkFreeMemory(device, wsi->depth_memory, NULL);
+        wsi->depth_memory = VK_NULL_HANDLE;
+    }
+}
+
+static bool create_depth_resources(pb_example_wsi *wsi)
+{
+    VkPhysicalDevice physical_device = pb_context_physical_device(wsi->context);
+    VkDevice device = pb_context_device(wsi->context);
+
+    if (!choose_depth_format(physical_device, &wsi->depth_format)) {
+        return false;
+    }
+
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = wsi->depth_format,
+        .extent = { wsi->extent.width, wsi->extent.height, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+
+    if (vkCreateImage(device, &image_info, NULL, &wsi->depth_image) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkMemoryRequirements mem_reqs;
+    vkGetImageMemoryRequirements(device, wsi->depth_image, &mem_reqs);
+
+    VkPhysicalDeviceMemoryProperties mem_props;
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_props);
+
+    uint32_t mem_type = UINT32_MAX;
+    for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
+        if ((mem_reqs.memoryTypeBits & (1u << i)) &&
+            (mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            mem_type = i;
+            break;
+        }
+    }
+
+    if (mem_type == UINT32_MAX) {
+        vkDestroyImage(device, wsi->depth_image, NULL);
+        wsi->depth_image = VK_NULL_HANDLE;
+        return false;
+    }
+
+    VkMemoryAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_reqs.size,
+        .memoryTypeIndex = mem_type,
+    };
+
+    if (vkAllocateMemory(device, &alloc_info, NULL, &wsi->depth_memory) != VK_SUCCESS) {
+        vkDestroyImage(device, wsi->depth_image, NULL);
+        wsi->depth_image = VK_NULL_HANDLE;
+        return false;
+    }
+
+    if (vkBindImageMemory(device, wsi->depth_image, wsi->depth_memory, 0) != VK_SUCCESS) {
+        destroy_depth_resources(wsi);
+        return false;
+    }
+
+    VkImageViewCreateInfo view_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = wsi->depth_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = wsi->depth_format,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+        },
+    };
+
+    if (vkCreateImageView(device, &view_info, NULL, &wsi->depth_view) != VK_SUCCESS) {
+        destroy_depth_resources(wsi);
+        return false;
+    }
+
+    return true;
+}
+
 static bool create_render_pass(pb_example_wsi *wsi)
 {
-    VkAttachmentDescription color_attachment = {
-        .format = wsi->format,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    VkAttachmentDescription attachments[2] = {
+        {
+            .format = wsi->format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        },
+        {
+            .format = wsi->depth_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        },
     };
 
     VkAttachmentReference color_ref = {
@@ -80,25 +218,33 @@ static bool create_render_pass(pb_example_wsi *wsi)
         .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
 
+    VkAttachmentReference depth_ref = {
+        .attachment = 1,
+        .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+
     VkSubpassDescription subpass = {
         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
         .pColorAttachments = &color_ref,
+        .pDepthStencilAttachment = &depth_ref,
     };
 
     VkSubpassDependency dependency = {
         .srcSubpass = VK_SUBPASS_EXTERNAL,
         .dstSubpass = 0,
-        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         .srcAccessMask = 0,
-        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     };
 
     VkRenderPassCreateInfo render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &color_attachment,
+        .attachmentCount = 2,
+        .pAttachments = attachments,
         .subpassCount = 1,
         .pSubpasses = &subpass,
         .dependencyCount = 1,
@@ -117,11 +263,11 @@ static bool create_framebuffers(pb_example_wsi *wsi)
     }
 
     for (uint32_t i = 0; i < wsi->image_count; ++i) {
-        VkImageView attachments[] = {wsi->image_views[i]};
+        VkImageView attachments[] = { wsi->image_views[i], wsi->depth_view };
         VkFramebufferCreateInfo fb_info = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .renderPass = wsi->render_pass,
-            .attachmentCount = 1,
+            .attachmentCount = 2,
             .pAttachments = attachments,
             .width = wsi->extent.width,
             .height = wsi->extent.height,
@@ -140,6 +286,8 @@ static bool create_framebuffers(pb_example_wsi *wsi)
 static void destroy_swapchain_resources(pb_example_wsi *wsi)
 {
     VkDevice device = pb_context_device(wsi->context);
+
+    destroy_depth_resources(wsi);
 
     if (wsi->framebuffers) {
         for (uint32_t i = 0; i < wsi->image_count; ++i) {
@@ -345,6 +493,10 @@ static bool create_swapchain_internal(pb_example_wsi *wsi, uint32_t width, uint3
         }
     }
 
+    if (!create_depth_resources(wsi)) {
+        return false;
+    }
+
     return create_framebuffers(wsi);
 }
 
@@ -375,6 +527,10 @@ static bool init_swapchain(pb_example_wsi *wsi)
         return false;
     }
     wsi->format = surface_format.format;
+
+    if (!choose_depth_format(pb_context_physical_device(wsi->context), &wsi->depth_format)) {
+        return false;
+    }
 
     if (!create_render_pass(wsi)) {
         return false;
@@ -627,16 +783,17 @@ bool pb_example_wsi_begin_frame(pb_example_wsi *wsi, float r, float g, float b, 
         return false;
     }
 
-    VkClearValue clear = {
-        .color = { { wsi->clear_color[0], wsi->clear_color[1], wsi->clear_color[2], wsi->clear_color[3] } },
+    VkClearValue clears[2] = {
+        { .color = { { wsi->clear_color[0], wsi->clear_color[1], wsi->clear_color[2], wsi->clear_color[3] } } },
+        { .depthStencil = { 1.0f, 0 } },
     };
     VkRenderPassBeginInfo rp_begin = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = wsi->render_pass,
         .framebuffer = wsi->framebuffers[wsi->current_image],
         .renderArea = { .extent = wsi->extent },
-        .clearValueCount = 1,
-        .pClearValues = &clear,
+        .clearValueCount = 2,
+        .pClearValues = clears,
     };
 
     vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);

@@ -50,6 +50,8 @@ peaberry_compile_glsl(PEABERRY_SHADER_SPIRV
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/quad.vert
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/quad.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/pbr_forward.vert
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/pbr_forward.frag
 )
 
 add_subdirectory(src)

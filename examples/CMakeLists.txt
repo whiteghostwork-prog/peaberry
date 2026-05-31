@@ -59,3 +59,14 @@ add_dependencies(peaberry_quad peaberry_shaders)
 set_target_properties(peaberry_quad PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
 )
+
+add_executable(peaberry_sphere sphere/main.c)
+target_link_libraries(peaberry_sphere PRIVATE peaberry_example_wsi m)
+target_compile_definitions(peaberry_sphere PRIVATE
+    PEABERRY_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders"
+)
+add_dependencies(peaberry_sphere peaberry_shaders)
+
+set_target_properties(peaberry_sphere PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
+)
