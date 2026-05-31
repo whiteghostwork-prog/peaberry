@@ -29,18 +29,26 @@
 #define PEABERRY_SHADER_DIR "shaders"
 #endif
 
+#ifndef PEABERRY_ASSET_DIR
+#define PEABERRY_ASSET_DIR "assets"
+#endif
+
 static char g_vert_spv[512];
 static char g_frag_spv[512];
+static char g_albedo_tex[512];
+static char g_mr_tex[512];
 
-static void shader_paths(void)
+static void resource_paths(void)
 {
     snprintf(g_vert_spv, sizeof(g_vert_spv), "%s/pbr_forward.vert.spv", PEABERRY_SHADER_DIR);
     snprintf(g_frag_spv, sizeof(g_frag_spv), "%s/pbr_forward.frag.spv", PEABERRY_SHADER_DIR);
+    snprintf(g_albedo_tex, sizeof(g_albedo_tex), "%s/sphere_albedo.png", PEABERRY_ASSET_DIR);
+    snprintf(g_mr_tex, sizeof(g_mr_tex), "%s/sphere_metallic_roughness.png", PEABERRY_ASSET_DIR);
 }
 
 int main(void)
 {
-    shader_paths();
+    resource_paths();
 
     pb_context_desc ctx_desc = {
         .app_name = "peaberry sphere",
@@ -73,9 +81,11 @@ int main(void)
         .render_pass = pb_example_wsi_render_pass(wsi),
         .vert_spv_path = g_vert_spv,
         .frag_spv_path = g_frag_spv,
-        .albedo = { 0.5f, 0.5f, 0.5f },
-        .metallic = 1.0f,
-        .roughness = 0.25f,
+        .albedo_texture_path = g_albedo_tex,
+        .metallic_roughness_texture_path = g_mr_tex,
+        .albedo_factor = { 1.0f, 1.0f, 1.0f },
+        .metallic_factor = 1.0f,
+        .roughness_factor = 1.0f,
     };
 
     pb_sphere_pass *sphere = pb_sphere_pass_create(&pass_desc);

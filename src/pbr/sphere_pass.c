@@ -19,6 +19,7 @@
 #include "peaberry/peaberry_math.h"
 #include "rhi/buffer.h"
 #include "rhi/mesh.h"
+#include "rhi/texture.h"
 
 #include "core/log.h"
 #include "pb_context_internal.h"
@@ -39,10 +40,10 @@ typedef struct pb_frame_ubo {
 typedef struct pb_material_ubo {
     float light_dir[3];
     float _pad0;
-    float albedo[3];
-    float metallic;
+    float albedo_factor[3];
+    float metallic_factor;
     float light_color[3];
-    float roughness;
+    float roughness_factor;
 } pb_material_ubo;
 
 struct pb_sphere_pass {
@@ -54,6 +55,8 @@ struct pb_sphere_pass {
     VkDescriptorSet descriptor_set;
     pb_rhi_buffer frame_buffer;
     pb_rhi_buffer material_buffer;
+    pb_rhi_texture albedo_texture;
+    pb_rhi_texture metallic_roughness_texture;
     pb_rhi_mesh mesh;
     VkShaderModule vert_module;
     VkShaderModule frag_module;
@@ -93,11 +96,23 @@ static bool create_descriptor_set_layout(struct pb_sphere_pass *pass)
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
+        {
+            .binding = 2,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 3,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 2,
+        .bindingCount = 4,
         .pBindings = bindings,
     };
 
@@ -109,16 +124,22 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
 {
     VkDevice device = pb_context_device(pass->context);
 
-    VkDescriptorPoolSize pool_size = {
-        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = 2,
+    VkDescriptorPoolSize pool_sizes[] = {
+        {
+            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 2,
+        },
+        {
+            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 2,
+        },
     };
 
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .maxSets = 1,
-        .poolSizeCount = 1,
-        .pPoolSizes = &pool_size,
+        .poolSizeCount = 2,
+        .pPoolSizes = pool_sizes,
     };
 
     if (vkCreateDescriptorPool(device, &pool_info, NULL, &pass->descriptor_pool) != VK_SUCCESS) {
@@ -148,6 +169,18 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         .range = sizeof(pb_material_ubo),
     };
 
+    VkDescriptorImageInfo albedo_info = {
+        .sampler = pass->albedo_texture.sampler,
+        .imageView = pass->albedo_texture.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
+    VkDescriptorImageInfo mr_info = {
+        .sampler = pass->metallic_roughness_texture.sampler,
+        .imageView = pass->metallic_roughness_texture.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
     VkWriteDescriptorSet writes[] = {
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -165,9 +198,25 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
             .descriptorCount = 1,
             .pBufferInfo = &material_info,
         },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
+            .dstBinding = 2,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &albedo_info,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
+            .dstBinding = 3,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &mr_info,
+        },
     };
 
-    vkUpdateDescriptorSets(device, 2, writes, 0, NULL);
+    vkUpdateDescriptorSets(device, 4, writes, 0, NULL);
     return true;
 }
 
@@ -197,7 +246,7 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
 
     VkVertexInputBindingDescription binding = {
         .binding = 0,
-        .stride = 6 * sizeof(float),
+        .stride = 8 * sizeof(float),
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
 
@@ -214,13 +263,19 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
             .format = VK_FORMAT_R32G32B32_SFLOAT,
             .offset = 3 * sizeof(float),
         },
+        {
+            .location = 2,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32_SFLOAT,
+            .offset = 6 * sizeof(float),
+        },
     };
 
     VkPipelineVertexInputStateCreateInfo vertex_input = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1,
         .pVertexBindingDescriptions = &binding,
-        .vertexAttributeDescriptionCount = 2,
+        .vertexAttributeDescriptionCount = 3,
         .pVertexAttributeDescriptions = attributes,
     };
 
@@ -342,7 +397,8 @@ static void update_uniforms(struct pb_sphere_pass *pass, VkExtent2D extent, floa
 
 pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
 {
-    if (!desc || !desc->context || !desc->render_pass || !desc->vert_spv_path || !desc->frag_spv_path) {
+    if (!desc || !desc->context || !desc->render_pass || !desc->vert_spv_path || !desc->frag_spv_path ||
+        !desc->albedo_texture_path || !desc->metallic_roughness_texture_path) {
         pb_log_error("Invalid PBR sphere pass description");
         return NULL;
     }
@@ -358,11 +414,11 @@ pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
     }
 
     pass->context = desc->context;
-    pass->material.albedo[0] = desc->albedo[0];
-    pass->material.albedo[1] = desc->albedo[1];
-    pass->material.albedo[2] = desc->albedo[2];
-    pass->material.metallic = desc->metallic;
-    pass->material.roughness = desc->roughness;
+    pass->material.albedo_factor[0] = desc->albedo_factor[0];
+    pass->material.albedo_factor[1] = desc->albedo_factor[1];
+    pass->material.albedo_factor[2] = desc->albedo_factor[2];
+    pass->material.metallic_factor = desc->metallic_factor;
+    pass->material.roughness_factor = desc->roughness_factor;
     pass->material.light_color[0] = 4.0f;
     pass->material.light_color[1] = 4.0f;
     pass->material.light_color[2] = 4.0f;
@@ -379,6 +435,10 @@ pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
 
     if (!create_descriptor_set_layout(pass) ||
         !create_uniform_buffers(pass) ||
+        !pb_rhi_texture_create_from_file(
+            pass->context, desc->albedo_texture_path, true, &pass->albedo_texture) ||
+        !pb_rhi_texture_create_from_file(
+            pass->context, desc->metallic_roughness_texture_path, false, &pass->metallic_roughness_texture) ||
         !create_descriptor_pool_and_set(pass) ||
         !pb_rhi_mesh_create_uv_sphere(pass->context, &mesh_desc, &pass->mesh) ||
         !create_pipeline(pass, desc)) {
@@ -415,6 +475,8 @@ void pb_sphere_pass_destroy(pb_sphere_pass *pass)
         }
         pb_rhi_buffer_destroy(pass->context, &pass->frame_buffer);
         pb_rhi_buffer_destroy(pass->context, &pass->material_buffer);
+        pb_rhi_texture_destroy(pass->context, &pass->albedo_texture);
+        pb_rhi_texture_destroy(pass->context, &pass->metallic_roughness_texture);
         pb_rhi_mesh_destroy(pass->context, &pass->mesh);
         if (pass->vert_module) {
             vkDestroyShaderModule(device, pass->vert_module, NULL);

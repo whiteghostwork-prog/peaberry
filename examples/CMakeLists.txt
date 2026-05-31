@@ -64,6 +64,7 @@ add_executable(peaberry_sphere sphere/main.c)
 target_link_libraries(peaberry_sphere PRIVATE peaberry_example_wsi m)
 target_compile_definitions(peaberry_sphere PRIVATE
     PEABERRY_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders"
+    PEABERRY_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets"
 )
 add_dependencies(peaberry_sphere peaberry_shaders)
 

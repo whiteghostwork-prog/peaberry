@@ -27,6 +27,7 @@ static const float k_pi = 3.14159265358979323846f;
 typedef struct pb_rhi_mesh_vertex {
     float pos[3];
     float normal[3];
+    float uv[2];
 } pb_rhi_mesh_vertex;
 
 static void mesh_reset(pb_rhi_mesh *mesh)
@@ -76,6 +77,8 @@ bool pb_rhi_mesh_create_uv_sphere(
             vertex->normal[0] = x / desc->radius;
             vertex->normal[1] = y / desc->radius;
             vertex->normal[2] = z / desc->radius;
+            vertex->uv[0] = (float)sector / (float)sectors;
+            vertex->uv[1] = (float)stack / (float)stacks;
         }
     }
 

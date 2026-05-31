@@ -385,7 +385,7 @@ pb_quad_pass *pb_quad_pass_create(const pb_quad_pass_desc *desc)
 
     if (!create_descriptor_set_layout(pass) ||
         !create_uniform_buffer(pass) ||
-        !pb_rhi_texture_create_from_file(pass->context, desc->texture_path, &pass->texture) ||
+        !pb_rhi_texture_create_from_file(pass->context, desc->texture_path, true, &pass->texture) ||
         !create_descriptor_pool_and_set(pass) ||
         !create_pipeline(pass, desc) ||
         !create_vertex_buffer(pass)) {

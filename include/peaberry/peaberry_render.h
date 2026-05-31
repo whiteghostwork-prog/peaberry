@@ -63,9 +63,11 @@ typedef struct pb_sphere_pass_desc {
     VkRenderPass render_pass;
     const char *vert_spv_path;
     const char *frag_spv_path;
-    float albedo[3];
-    float metallic;
-    float roughness;
+    const char *albedo_texture_path;
+    const char *metallic_roughness_texture_path;
+    float albedo_factor[3];
+    float metallic_factor;
+    float roughness_factor;
 } pb_sphere_pass_desc;
 
 pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc);

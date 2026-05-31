@@ -27,6 +27,7 @@ typedef struct pb_rhi_texture {
     VkDeviceMemory memory;
     VkImageView view;
     VkSampler sampler;
+    VkFormat format;
     uint32_t width;
     uint32_t height;
 } pb_rhi_texture;
@@ -34,6 +35,7 @@ typedef struct pb_rhi_texture {
 bool pb_rhi_texture_create_from_file(
     pb_context *context,
     const char *path,
+    bool srgb,
     pb_rhi_texture *texture);
 void pb_rhi_texture_destroy(pb_context *context, pb_rhi_texture *texture);
 

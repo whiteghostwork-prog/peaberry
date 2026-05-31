@@ -190,15 +190,18 @@ static bool create_image(
     pb_context *context,
     uint32_t width,
     uint32_t height,
+    VkFormat format,
     pb_rhi_texture *texture)
 {
     const pb_vk_context *vk = &context->vk;
     VkDevice device = vk->device;
 
+    texture->format = format;
+
     VkImageCreateInfo image_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_SRGB,
+        .format = format,
         .extent = { width, height, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
@@ -262,7 +265,7 @@ static bool create_view_and_sampler(pb_context *context, pb_rhi_texture *texture
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = texture->image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_SRGB,
+        .format = texture->format,
         .subresourceRange = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .levelCount = 1,
@@ -300,6 +303,7 @@ static bool create_view_and_sampler(pb_context *context, pb_rhi_texture *texture
 bool pb_rhi_texture_create_from_file(
     pb_context *context,
     const char *path,
+    bool srgb,
     pb_rhi_texture *texture)
 {
     if (!context || !path || !texture) {
@@ -323,9 +327,10 @@ bool pb_rhi_texture_create_from_file(
         return false;
     }
 
+    const VkFormat format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     const VkDeviceSize image_size = (VkDeviceSize)width * (VkDeviceSize)height * 4;
 
-    if (!create_image(context, (uint32_t)width, (uint32_t)height, texture)) {
+    if (!create_image(context, (uint32_t)width, (uint32_t)height, format, texture)) {
         stbi_image_free(pixels);
         return false;
     }
