@@ -65,6 +65,7 @@ typedef struct pb_sphere_pass_desc {
     const char *frag_spv_path;
     const char *albedo_texture_path;
     const char *metallic_roughness_texture_path;
+    const char *normal_texture_path;
     float albedo_factor[3];
     float metallic_factor;
     float roughness_factor;

@@ -37,6 +37,7 @@ static char g_vert_spv[512];
 static char g_frag_spv[512];
 static char g_albedo_tex[512];
 static char g_mr_tex[512];
+static char g_normal_tex[512];
 
 static void resource_paths(void)
 {
@@ -44,6 +45,7 @@ static void resource_paths(void)
     snprintf(g_frag_spv, sizeof(g_frag_spv), "%s/pbr_forward.frag.spv", PEABERRY_SHADER_DIR);
     snprintf(g_albedo_tex, sizeof(g_albedo_tex), "%s/sphere_albedo.png", PEABERRY_ASSET_DIR);
     snprintf(g_mr_tex, sizeof(g_mr_tex), "%s/sphere_metallic_roughness.png", PEABERRY_ASSET_DIR);
+    snprintf(g_normal_tex, sizeof(g_normal_tex), "%s/sphere_normal.png", PEABERRY_ASSET_DIR);
 }
 
 int main(void)
@@ -83,6 +85,7 @@ int main(void)
         .frag_spv_path = g_frag_spv,
         .albedo_texture_path = g_albedo_tex,
         .metallic_roughness_texture_path = g_mr_tex,
+        .normal_texture_path = g_normal_tex,
         .albedo_factor = { 1.0f, 1.0f, 1.0f },
         .metallic_factor = 1.0f,
         .roughness_factor = 1.0f,

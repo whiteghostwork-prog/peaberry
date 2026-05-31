@@ -18,10 +18,13 @@ layout(set = 0, binding = 1) uniform MaterialLight {
 
 layout(set = 0, binding = 2) uniform sampler2D u_albedo;
 layout(set = 0, binding = 3) uniform sampler2D u_metallic_roughness;
+layout(set = 0, binding = 4) uniform sampler2D u_normal;
 
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec2 v_uv;
+layout(location = 3) in vec3 v_tangent;
+layout(location = 4) in vec3 v_bitangent;
 
 layout(location = 0) out vec4 out_color;
 
@@ -65,7 +68,10 @@ void main()
     float metallic = mr_sample.b * material.metallic_factor;
     roughness = clamp(roughness, 0.04, 1.0);
 
-    vec3 N = normalize(v_normal);
+    vec3 tangent_normal = texture(u_normal, v_uv).rgb * 2.0 - 1.0;
+    mat3 TBN = mat3(normalize(v_tangent), normalize(v_bitangent), normalize(v_normal));
+    vec3 N = normalize(TBN * tangent_normal);
+
     vec3 V = normalize(frame.camera_pos - v_world_pos);
     vec3 L = normalize(material.light_dir);
     vec3 H = normalize(V + L);
