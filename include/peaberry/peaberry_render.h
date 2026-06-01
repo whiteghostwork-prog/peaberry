@@ -18,6 +18,7 @@
 #define PEABERRY_RENDER_H
 
 #include "peaberry/peaberry_vk.h"
+#include "peaberry/peaberry_math.h"
 
 typedef struct pb_triangle_pass pb_triangle_pass;
 
@@ -82,5 +83,26 @@ void pb_sphere_pass_record(
     VkCommandBuffer cmd,
     VkExtent2D extent,
     float time_seconds);
+
+void pb_sphere_pass_set_material_factors(
+    pb_sphere_pass *pass,
+    const float albedo_factor[3],
+    float metallic_factor,
+    float roughness_factor);
+
+void pb_sphere_pass_record_frame(
+    pb_sphere_pass *pass,
+    VkCommandBuffer cmd,
+    VkExtent2D extent,
+    float time_seconds);
+
+void pb_sphere_pass_record_mesh(
+    pb_sphere_pass *pass,
+    VkCommandBuffer cmd,
+    VkBuffer vertex_buffer,
+    VkBuffer index_buffer,
+    uint32_t index_count,
+    VkIndexType index_type,
+    const pb_mat4 model);
 
 #endif

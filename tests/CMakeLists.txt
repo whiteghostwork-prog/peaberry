@@ -6,6 +6,8 @@ add_executable(peaberry_tests
     test_runner.c
     test_math.c
     test_vulkan.c
+    test_gltf.c
+    test_gltf_render.c
 )
 
 target_include_directories(peaberry_tests
@@ -22,6 +24,7 @@ target_link_libraries(peaberry_tests
 
 target_compile_definitions(peaberry_tests PRIVATE
     PEABERRY_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders"
+    PEABERRY_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets"
 )
 
 add_dependencies(peaberry_tests peaberry_shaders)

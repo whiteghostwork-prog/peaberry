@@ -18,6 +18,7 @@
 #define PEABERRY_RHI_MESH_H
 
 #include "peaberry/peaberry.h"
+#include "pbr/vertex.h"
 #include "rhi/buffer.h"
 
 #include <stdbool.h>
@@ -27,6 +28,7 @@ typedef struct pb_rhi_mesh {
     pb_rhi_buffer vertices;
     pb_rhi_buffer indices;
     uint32_t index_count;
+    VkIndexType index_type;
 } pb_rhi_mesh;
 
 typedef struct pb_rhi_mesh_uv_sphere_desc {
@@ -34,6 +36,15 @@ typedef struct pb_rhi_mesh_uv_sphere_desc {
     uint32_t sectors;
     uint32_t stacks;
 } pb_rhi_mesh_uv_sphere_desc;
+
+bool pb_rhi_mesh_create_interleaved(
+    pb_context *context,
+    const pb_pbr_vertex *vertices,
+    uint32_t vertex_count,
+    const void *indices,
+    uint32_t index_count,
+    VkIndexType index_type,
+    pb_rhi_mesh *mesh);
 
 bool pb_rhi_mesh_create_uv_sphere(
     pb_context *context,

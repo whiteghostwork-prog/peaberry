@@ -1,31 +1,20 @@
 /*
  * Copyright 2026 The Peaberry Authors
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "peaberry/peaberry_render.h"
+#include "peaberry/peaberry_gltf.h"
 
 #include "peaberry/peaberry_math.h"
+#include "pbr/gltf_scene_internal.h"
 #include "pbr/ibl.h"
 #include "rhi/buffer.h"
 #include "rhi/mesh.h"
-#include "rhi/texture.h"
+#include "rhi/shader.h"
 
 #include "core/log.h"
 #include "pb_context_internal.h"
 #include "peaberry/peaberry_vk.h"
-#include "rhi/shader.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -37,60 +26,29 @@ typedef struct pb_frame_ubo {
     float exposure;
 } pb_frame_ubo;
 
-typedef struct pb_material_ubo {
-    float light_dir[3];
-    float _pad0;
-    float albedo_factor[3];
-    float metallic_factor;
-    float light_color[3];
-    float roughness_factor;
-    float occlusion_strength;
-    float emissive_factor[3];
-    float _pad1;
-} pb_material_ubo;
-
-struct pb_sphere_pass {
+struct pb_pbr_forward_pass {
     pb_context *context;
     VkPipeline pipeline;
     VkPipelineLayout pipeline_layout;
     VkDescriptorSetLayout descriptor_set_layout;
     VkDescriptorPool descriptor_pool;
-    VkDescriptorSet descriptor_set;
+    VkDescriptorSet *descriptor_sets;
+    uint32_t descriptor_set_count;
     pb_rhi_buffer frame_buffer;
-    pb_rhi_buffer material_buffer;
-    pb_rhi_texture albedo_texture;
-    pb_rhi_texture metallic_roughness_texture;
-    pb_rhi_texture normal_texture;
-    pb_rhi_texture occlusion_texture;
-    pb_rhi_texture emissive_texture;
     pb_ibl_environment ibl;
-    pb_rhi_mesh mesh;
+    pb_gltf_scene *scene;
     VkShaderModule vert_module;
     VkShaderModule frag_module;
-    pb_material_ubo material;
     float exposure;
     float prefilter_max_lod;
+    /* external camera (set by pb_pbr_forward_pass_set_camera) */
+    bool has_external_camera;
+    pb_mat4 external_view;
+    pb_mat4 external_proj;
+    float external_camera_pos[3];
 };
 
-static bool create_uniform_buffers(struct pb_sphere_pass *pass)
-{
-    pb_rhi_buffer_desc frame_desc = {
-        .size = sizeof(pb_frame_ubo),
-        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
-    };
-
-    pb_rhi_buffer_desc material_desc = {
-        .size = sizeof(pb_material_ubo),
-        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
-    };
-
-    return pb_rhi_buffer_create(pass->context, &frame_desc, &pass->frame_buffer) &&
-           pb_rhi_buffer_create(pass->context, &material_desc, &pass->material_buffer);
-}
-
-static bool create_descriptor_set_layout(struct pb_sphere_pass *pass)
+static bool create_descriptor_set_layout(struct pb_pbr_forward_pass *pass)
 {
     VkDescriptorSetLayoutBinding bindings[] = {
         {
@@ -165,43 +123,31 @@ static bool create_descriptor_set_layout(struct pb_sphere_pass *pass)
     return vkCreateDescriptorSetLayout(device, &layout_info, NULL, &pass->descriptor_set_layout) == VK_SUCCESS;
 }
 
-static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
+static void destroy_scene_bindings(struct pb_pbr_forward_pass *pass)
 {
+    if (!pass || !pb_context_device_ready(pass->context)) {
+        pass->descriptor_sets = NULL;
+        pass->descriptor_set_count = 0;
+        return;
+    }
+
     VkDevice device = pb_context_device(pass->context);
-
-    VkDescriptorPoolSize pool_sizes[] = {
-        {
-            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 2,
-        },
-        {
-            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 8,
-        },
-    };
-
-    VkDescriptorPoolCreateInfo pool_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets = 1,
-        .poolSizeCount = 2,
-        .pPoolSizes = pool_sizes,
-    };
-
-    if (vkCreateDescriptorPool(device, &pool_info, NULL, &pass->descriptor_pool) != VK_SUCCESS) {
-        return false;
+    if (pass->descriptor_pool) {
+        vkDestroyDescriptorPool(device, pass->descriptor_pool, NULL);
+        pass->descriptor_pool = VK_NULL_HANDLE;
     }
 
-    VkDescriptorSetAllocateInfo alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = pass->descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &pass->descriptor_set_layout,
-    };
+    free(pass->descriptor_sets);
+    pass->descriptor_sets = NULL;
+    pass->descriptor_set_count = 0;
+    pass->scene = NULL;
+}
 
-    if (vkAllocateDescriptorSets(device, &alloc_info, &pass->descriptor_set) != VK_SUCCESS) {
-        return false;
-    }
-
+static bool write_material_descriptor_set(
+    struct pb_pbr_forward_pass *pass,
+    VkDescriptorSet set,
+    const pb_gltf_material *material)
+{
     VkDescriptorBufferInfo frame_info = {
         .buffer = pb_rhi_buffer_handle(&pass->frame_buffer),
         .offset = 0,
@@ -209,26 +155,26 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
     };
 
     VkDescriptorBufferInfo material_info = {
-        .buffer = pb_rhi_buffer_handle(&pass->material_buffer),
+        .buffer = pb_rhi_buffer_handle(&material->material_buffer),
         .offset = 0,
         .range = sizeof(pb_material_ubo),
     };
 
     VkDescriptorImageInfo albedo_info = {
-        .sampler = pass->albedo_texture.sampler,
-        .imageView = pass->albedo_texture.view,
+        .sampler = material->albedo.sampler,
+        .imageView = material->albedo.view,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
 
     VkDescriptorImageInfo mr_info = {
-        .sampler = pass->metallic_roughness_texture.sampler,
-        .imageView = pass->metallic_roughness_texture.view,
+        .sampler = material->metallic_roughness.sampler,
+        .imageView = material->metallic_roughness.view,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
 
     VkDescriptorImageInfo normal_info = {
-        .sampler = pass->normal_texture.sampler,
-        .imageView = pass->normal_texture.view,
+        .sampler = material->normal.sampler,
+        .imageView = material->normal.view,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
 
@@ -251,21 +197,21 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
     };
 
     VkDescriptorImageInfo occlusion_info = {
-        .sampler = pass->occlusion_texture.sampler,
-        .imageView = pass->occlusion_texture.view,
+        .sampler = material->occlusion.sampler,
+        .imageView = material->occlusion.view,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
 
     VkDescriptorImageInfo emissive_info = {
-        .sampler = pass->emissive_texture.sampler,
-        .imageView = pass->emissive_texture.view,
+        .sampler = material->emissive.sampler,
+        .imageView = material->emissive.view,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
 
     VkWriteDescriptorSet writes[] = {
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = pass->descriptor_set,
+            .dstSet = set,
             .dstBinding = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .descriptorCount = 1,
@@ -273,7 +219,7 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = pass->descriptor_set,
+            .dstSet = set,
             .dstBinding = 1,
             .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .descriptorCount = 1,
@@ -281,7 +227,7 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = pass->descriptor_set,
+            .dstSet = set,
             .dstBinding = 2,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
@@ -289,7 +235,7 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = pass->descriptor_set,
+            .dstSet = set,
             .dstBinding = 3,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
@@ -297,7 +243,7 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = pass->descriptor_set,
+            .dstSet = set,
             .dstBinding = 4,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
@@ -305,7 +251,7 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = pass->descriptor_set,
+            .dstSet = set,
             .dstBinding = 5,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
@@ -313,7 +259,7 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = pass->descriptor_set,
+            .dstSet = set,
             .dstBinding = 6,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
@@ -321,7 +267,7 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = pass->descriptor_set,
+            .dstSet = set,
             .dstBinding = 7,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
@@ -329,7 +275,7 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = pass->descriptor_set,
+            .dstSet = set,
             .dstBinding = 8,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
@@ -337,7 +283,7 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = pass->descriptor_set,
+            .dstSet = set,
             .dstBinding = 9,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
@@ -345,11 +291,90 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
     };
 
-    vkUpdateDescriptorSets(device, 10, writes, 0, NULL);
+    vkUpdateDescriptorSets(pb_context_device(pass->context), 10, writes, 0, NULL);
     return true;
 }
 
-static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_desc *desc)
+void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *scene)
+{
+    if (!pass) {
+        return;
+    }
+
+    destroy_scene_bindings(pass);
+
+    const uint32_t material_count = scene ? pb_gltf_scene_material_count(scene) : 0;
+    if (material_count == 0) {
+        if (scene) {
+            pb_log_error("glTF scene has no materials");
+        }
+        return;
+    }
+
+    VkDevice device = pb_context_device(pass->context);
+    VkDescriptorSet *sets = calloc(material_count, sizeof(*sets));
+    if (!sets) {
+        pb_log_error("Failed to allocate %u material descriptor sets", material_count);
+        return;
+    }
+
+    VkDescriptorPoolSize pool_sizes[] = {
+        {
+            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 2 * material_count,
+        },
+        {
+            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 8 * material_count,
+        },
+    };
+
+    VkDescriptorPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = material_count,
+        .poolSizeCount = 2,
+        .pPoolSizes = pool_sizes,
+    };
+
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(device, &pool_info, NULL, &pool) != VK_SUCCESS) {
+        pb_log_error("Failed to create descriptor pool for %u materials", material_count);
+        free(sets);
+        return;
+    }
+
+    VkDescriptorSetLayout layout = pass->descriptor_set_layout;
+    VkDescriptorSetAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &layout,
+    };
+
+    for (uint32_t i = 0; i < material_count; ++i) {
+        if (vkAllocateDescriptorSets(device, &alloc_info, &sets[i]) != VK_SUCCESS) {
+            pb_log_error("Failed to allocate descriptor set %u/%u", i + 1, material_count);
+            vkDestroyDescriptorPool(device, pool, NULL);
+            free(sets);
+            return;
+        }
+
+        write_material_descriptor_set(pass, sets[i], &scene->materials[i]);
+    }
+
+    pass->descriptor_pool = pool;
+    pass->descriptor_sets = sets;
+    pass->descriptor_set_count = material_count;
+    pass->scene = scene;
+    pb_log_info("PBR forward pass bound %u material(s)", material_count);
+}
+
+bool pb_pbr_forward_pass_scene_is_bound(const pb_pbr_forward_pass *pass)
+{
+    return pass && pass->scene && pass->descriptor_set_count > 0;
+}
+
+static bool create_pipeline(struct pb_pbr_forward_pass *pass, const pb_pbr_forward_pass_desc *desc)
 {
     VkDevice device = pb_context_device(pass->context);
 
@@ -380,30 +405,10 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
     };
 
     VkVertexInputAttributeDescription attributes[] = {
-        {
-            .location = 0,
-            .binding = 0,
-            .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .offset = 0,
-        },
-        {
-            .location = 1,
-            .binding = 0,
-            .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .offset = 3 * sizeof(float),
-        },
-        {
-            .location = 2,
-            .binding = 0,
-            .format = VK_FORMAT_R32G32_SFLOAT,
-            .offset = 6 * sizeof(float),
-        },
-        {
-            .location = 3,
-            .binding = 0,
-            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
-            .offset = 8 * sizeof(float),
-        },
+        { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0 },
+        { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 3 * sizeof(float) },
+        { .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 6 * sizeof(float) },
+        { .location = 3, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 8 * sizeof(float) },
     };
 
     VkPipelineVertexInputStateCreateInfo vertex_input = {
@@ -417,7 +422,6 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
     VkPipelineInputAssemblyStateCreateInfo input_assembly = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        .primitiveRestartEnable = VK_FALSE,
     };
 
     VkPipelineViewportStateCreateInfo viewport_state = {
@@ -426,11 +430,7 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
         .scissorCount = 1,
     };
 
-    VkDynamicState dynamic_states[] = {
-        VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR,
-    };
-
+    VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
     VkPipelineDynamicStateCreateInfo dynamic_state = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .dynamicStateCount = 2,
@@ -461,10 +461,7 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
 
     VkPipelineColorBlendAttachmentState color_blend_attachment = {
         .colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT |
-            VK_COLOR_COMPONENT_G_BIT |
-            VK_COLOR_COMPONENT_B_BIT |
-            VK_COLOR_COMPONENT_A_BIT,
+            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
     };
 
     VkPipelineColorBlendStateCreateInfo color_blend = {
@@ -508,42 +505,43 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
         .subpass = 0,
     };
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &pass->pipeline) != VK_SUCCESS) {
-        return false;
-    }
-
-    return true;
+    return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &pass->pipeline) == VK_SUCCESS;
 }
 
-static void update_uniforms(struct pb_sphere_pass *pass, VkExtent2D extent, float time_seconds)
+static void update_frame_uniforms(struct pb_pbr_forward_pass *pass, VkExtent2D extent)
 {
-    (void)time_seconds;
-
     pb_frame_ubo frame = {0};
 
-    const pb_vec3 eye = { 0.0f, 0.0f, 3.0f };
-    const pb_vec3 center = { 0.0f, 0.0f, 0.0f };
-    const pb_vec3 up = { 0.0f, 1.0f, 0.0f };
-    pb_mat4_look_at(frame.view, eye, center, up);
+    if (pass->has_external_camera) {
+        memcpy(frame.view, pass->external_view, sizeof(frame.view));
+        memcpy(frame.proj, pass->external_proj, sizeof(frame.proj));
+        frame.camera_pos[0] = pass->external_camera_pos[0];
+        frame.camera_pos[1] = pass->external_camera_pos[1];
+        frame.camera_pos[2] = pass->external_camera_pos[2];
+    } else {
+        const pb_vec3 eye = { 0.0f, 0.0f, 3.0f };
+        const pb_vec3 center = { 0.0f, 0.0f, 0.0f };
+        const pb_vec3 up = { 0.0f, 1.0f, 0.0f };
+        pb_mat4_look_at(frame.view, eye, center, up);
 
-    const float aspect = extent.height > 0 ? (float)extent.width / (float)extent.height : 1.0f;
-    pb_mat4_perspective(frame.proj, pb_radians(45.0f), aspect, 0.1f, 100.0f);
+        const float aspect = extent.height > 0 ? (float)extent.width / (float)extent.height : 1.0f;
+        pb_mat4_perspective(frame.proj, pb_radians(45.0f), aspect, 0.1f, 100.0f);
 
-    frame.camera_pos[0] = eye[0];
-    frame.camera_pos[1] = eye[1];
-    frame.camera_pos[2] = eye[2];
+        frame.camera_pos[0] = eye[0];
+        frame.camera_pos[1] = eye[1];
+        frame.camera_pos[2] = eye[2];
+    }
+
     frame.exposure = pass->exposure;
 
     pb_rhi_buffer_upload(pass->context, &pass->frame_buffer, &frame, sizeof(frame));
-    pb_rhi_buffer_upload(pass->context, &pass->material_buffer, &pass->material, sizeof(pass->material));
 }
 
-pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
+pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *desc)
 {
     if (!desc || !desc->context || !desc->render_pass || !desc->vert_spv_path || !desc->frag_spv_path ||
-        !desc->albedo_texture_path || !desc->metallic_roughness_texture_path || !desc->normal_texture_path ||
         !desc->ibl_shader_dir) {
-        pb_log_error("Invalid PBR sphere pass description");
+        pb_log_error("Invalid PBR forward pass description");
         return NULL;
     }
 
@@ -552,48 +550,21 @@ pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
         return NULL;
     }
 
-    pb_sphere_pass *pass = calloc(1, sizeof(*pass));
+    pb_pbr_forward_pass *pass = calloc(1, sizeof(*pass));
     if (!pass) {
         return NULL;
     }
 
     pass->context = desc->context;
-    pass->material.albedo_factor[0] = desc->albedo_factor[0];
-    pass->material.albedo_factor[1] = desc->albedo_factor[1];
-    pass->material.albedo_factor[2] = desc->albedo_factor[2];
-    pass->material.metallic_factor = desc->metallic_factor;
-    pass->material.roughness_factor = desc->roughness_factor;
-    pass->material.light_color[0] = 4.0f;
-    pass->material.light_color[1] = 4.0f;
-    pass->material.light_color[2] = 4.0f;
-    /* Direction from origin toward the light (upper-right-front). */
-    pass->material.light_dir[0] = 0.5f;
-    pass->material.light_dir[1] = 0.8f;
-    pass->material.light_dir[2] = 0.4f;
-    pass->material.occlusion_strength = 1.0f;
-    pass->material.emissive_factor[0] = 0.0f;
-    pass->material.emissive_factor[1] = 0.0f;
-    pass->material.emissive_factor[2] = 0.0f;
     pass->exposure = desc->exposure > 0.0f ? desc->exposure : 1.0f;
 
-    pb_rhi_mesh_uv_sphere_desc mesh_desc = {
-        .radius = 1.0f,
-        .sectors = 48,
-        .stacks = 32,
+    pb_rhi_buffer_desc frame_desc = {
+        .size = sizeof(pb_frame_ubo),
+        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
     };
 
-    if (!create_descriptor_set_layout(pass) ||
-        !create_uniform_buffers(pass) ||
-        !pb_rhi_texture_create_from_file(
-            pass->context, desc->albedo_texture_path, true, &pass->albedo_texture) ||
-        !pb_rhi_texture_create_from_file(
-            pass->context, desc->metallic_roughness_texture_path, false, &pass->metallic_roughness_texture) ||
-        !pb_rhi_texture_create_from_file(
-            pass->context, desc->normal_texture_path, false, &pass->normal_texture) ||
-        !pb_rhi_texture_create_solid_rgba8(
-            pass->context, (const uint8_t[]){255, 255, 255, 255}, false, &pass->occlusion_texture) ||
-        !pb_rhi_texture_create_solid_rgba8(
-            pass->context, (const uint8_t[]){0, 0, 0, 255}, false, &pass->emissive_texture) ||
+    if (!create_descriptor_set_layout(pass) || !pb_rhi_buffer_create(pass->context, &frame_desc, &pass->frame_buffer) ||
         !pb_ibl_environment_create(
             &(pb_ibl_environment_desc){
                 .context = pass->context,
@@ -601,20 +572,27 @@ pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
                 .shader_dir = desc->ibl_shader_dir,
             },
             &pass->ibl) ||
-        !create_descriptor_pool_and_set(pass) ||
-        !pb_rhi_mesh_create_uv_sphere(pass->context, &mesh_desc, &pass->mesh) ||
         !create_pipeline(pass, desc)) {
-        pb_sphere_pass_destroy(pass);
+        pb_pbr_forward_pass_destroy(pass);
         return NULL;
     }
 
     pass->prefilter_max_lod = pass->ibl.prefilter_max_lod;
 
-    pb_log_info("PBR sphere pass ready");
+    if (desc->scene) {
+        pb_pbr_forward_pass_set_scene(pass, desc->scene);
+        if (!pb_pbr_forward_pass_scene_is_bound(pass)) {
+            pb_log_error("Failed to bind glTF scene to PBR forward pass");
+            pb_pbr_forward_pass_destroy(pass);
+            return NULL;
+        }
+    }
+
+    pb_log_info("PBR forward pass ready");
     return pass;
 }
 
-void pb_sphere_pass_destroy(pb_sphere_pass *pass)
+void pb_pbr_forward_pass_destroy(pb_pbr_forward_pass *pass)
 {
     if (!pass) {
         return;
@@ -622,30 +600,20 @@ void pb_sphere_pass_destroy(pb_sphere_pass *pass)
 
     if (pb_context_device_ready(pass->context)) {
         pb_context_wait_device_idle(pass->context);
+        destroy_scene_bindings(pass);
 
         VkDevice device = pb_context_device(pass->context);
-
         if (pass->pipeline) {
             vkDestroyPipeline(device, pass->pipeline, NULL);
         }
         if (pass->pipeline_layout) {
             vkDestroyPipelineLayout(device, pass->pipeline_layout, NULL);
         }
-        if (pass->descriptor_pool) {
-            vkDestroyDescriptorPool(device, pass->descriptor_pool, NULL);
-        }
         if (pass->descriptor_set_layout) {
             vkDestroyDescriptorSetLayout(device, pass->descriptor_set_layout, NULL);
         }
         pb_rhi_buffer_destroy(pass->context, &pass->frame_buffer);
-        pb_rhi_buffer_destroy(pass->context, &pass->material_buffer);
-        pb_rhi_texture_destroy(pass->context, &pass->albedo_texture);
-        pb_rhi_texture_destroy(pass->context, &pass->metallic_roughness_texture);
-        pb_rhi_texture_destroy(pass->context, &pass->normal_texture);
-        pb_rhi_texture_destroy(pass->context, &pass->occlusion_texture);
-        pb_rhi_texture_destroy(pass->context, &pass->emissive_texture);
         pb_ibl_environment_destroy(pass->context, &pass->ibl);
-        pb_rhi_mesh_destroy(pass->context, &pass->mesh);
         if (pass->vert_module) {
             vkDestroyShaderModule(device, pass->vert_module, NULL);
         }
@@ -657,36 +625,52 @@ void pb_sphere_pass_destroy(pb_sphere_pass *pass)
     free(pass);
 }
 
-void pb_sphere_pass_set_material_factors(
-    pb_sphere_pass *pass,
-    const float albedo_factor[3],
-    float metallic_factor,
-    float roughness_factor)
+void pb_pbr_forward_pass_set_camera(
+    pb_pbr_forward_pass *pass,
+    const pb_mat4 view,
+    const pb_mat4 proj,
+    const float camera_pos[3])
 {
-    if (!pass || !albedo_factor) {
+    if (!pass) {
         return;
     }
 
-    pass->material.albedo_factor[0] = albedo_factor[0];
-    pass->material.albedo_factor[1] = albedo_factor[1];
-    pass->material.albedo_factor[2] = albedo_factor[2];
-    pass->material.metallic_factor = metallic_factor;
-    pass->material.roughness_factor = roughness_factor;
-
-    pb_rhi_buffer_upload(pass->context, &pass->material_buffer, &pass->material, sizeof(pass->material));
+    pass->has_external_camera = true;
+    memcpy(pass->external_view, view, sizeof(pass->external_view));
+    memcpy(pass->external_proj, proj, sizeof(pass->external_proj));
+    pass->external_camera_pos[0] = camera_pos[0];
+    pass->external_camera_pos[1] = camera_pos[1];
+    pass->external_camera_pos[2] = camera_pos[2];
 }
 
-void pb_sphere_pass_record_frame(
-    pb_sphere_pass *pass,
+void pb_pbr_forward_pass_record(
+    pb_pbr_forward_pass *pass,
     VkCommandBuffer cmd,
     VkExtent2D extent,
+    const pb_gltf_scene *scene,
     float time_seconds)
 {
-    if (!pass || extent.width == 0 || extent.height == 0) {
+    if (!pass || !scene || extent.width == 0 || extent.height == 0) {
         return;
     }
 
-    update_uniforms(pass, extent, time_seconds);
+    if (scene != pass->scene) {
+        pb_pbr_forward_pass_set_scene(pass, (pb_gltf_scene *)scene);
+    }
+
+    if (!pb_pbr_forward_pass_scene_is_bound(pass) || scene != pass->scene) {
+        return;
+    }
+
+    update_frame_uniforms(pass, extent);
+
+    for (uint32_t i = 0; i < scene->material_count; ++i) {
+        pb_rhi_buffer_upload(
+            pass->context,
+            &scene->materials[i].material_buffer,
+            &scene->materials[i].material_data,
+            sizeof(scene->materials[i].material_data));
+    }
 
     VkViewport viewport = {
         .width = (float)extent.width,
@@ -694,73 +678,49 @@ void pb_sphere_pass_record_frame(
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };
-    VkRect2D scissor = {
-        .extent = extent,
-    };
+    VkRect2D scissor = { .extent = extent };
 
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass->pipeline);
-    vkCmdBindDescriptorSets(
-        cmd,
-        VK_PIPELINE_BIND_POINT_GRAPHICS,
-        pass->pipeline_layout,
-        0,
-        1,
-        &pass->descriptor_set,
-        0,
-        NULL);
-}
 
-void pb_sphere_pass_record_mesh(
-    pb_sphere_pass *pass,
-    VkCommandBuffer cmd,
-    VkBuffer vertex_buffer,
-    VkBuffer index_buffer,
-    uint32_t index_count,
-    VkIndexType index_type,
-    const pb_mat4 model)
-{
-    if (!pass || !cmd || vertex_buffer == VK_NULL_HANDLE || index_buffer == VK_NULL_HANDLE || index_count == 0) {
-        return;
+    for (uint32_t d = 0; d < scene->draw_count; ++d) {
+        const pb_gltf_draw *draw = &scene->draws[d];
+        if (draw->material_index >= pass->descriptor_set_count || draw->mesh.index_count == 0) {
+            continue;
+        }
+
+        VkBuffer vertex_buffer = pb_rhi_buffer_handle(&draw->mesh.vertices);
+        VkBuffer index_buffer = pb_rhi_buffer_handle(&draw->mesh.indices);
+        if (vertex_buffer == VK_NULL_HANDLE || index_buffer == VK_NULL_HANDLE) {
+            continue;
+        }
+
+        vkCmdBindDescriptorSets(
+            cmd,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pass->pipeline_layout,
+            0,
+            1,
+            &pass->descriptor_sets[draw->material_index],
+            0,
+            NULL);
+
+        pb_mat4 model;
+        memcpy(model, draw->world, sizeof(model));
+        pb_mat4_rotate_y(model, time_seconds * 0.4f, model);
+
+        vkCmdPushConstants(
+            cmd,
+            pass->pipeline_layout,
+            VK_SHADER_STAGE_VERTEX_BIT,
+            0,
+            sizeof(model),
+            model);
+
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);
+        vkCmdBindIndexBuffer(cmd, index_buffer, 0, draw->mesh.index_type);
+        vkCmdDrawIndexed(cmd, draw->mesh.index_count, 1, 0, 0, 0);
     }
-
-    vkCmdPushConstants(
-        cmd,
-        pass->pipeline_layout,
-        VK_SHADER_STAGE_VERTEX_BIT,
-        0,
-        sizeof(pb_mat4),
-        model);
-
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);
-    vkCmdBindIndexBuffer(cmd, index_buffer, 0, index_type);
-    vkCmdDrawIndexed(cmd, index_count, 1, 0, 0, 0);
-}
-
-void pb_sphere_pass_record(
-    pb_sphere_pass *pass,
-    VkCommandBuffer cmd,
-    VkExtent2D extent,
-    float time_seconds)
-{
-    if (!pass || extent.width == 0 || extent.height == 0) {
-        return;
-    }
-
-    pb_sphere_pass_record_frame(pass, cmd, extent, time_seconds);
-
-    pb_mat4 model = {0};
-    pb_mat4_identity(model);
-    pb_mat4_rotate_y(model, time_seconds * 0.4f, model);
-
-    pb_sphere_pass_record_mesh(
-        pass,
-        cmd,
-        pb_rhi_buffer_handle(&pass->mesh.vertices),
-        pb_rhi_buffer_handle(&pass->mesh.indices),
-        pass->mesh.index_count,
-        pass->mesh.index_type,
-        model);
 }

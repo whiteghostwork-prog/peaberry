@@ -42,6 +42,16 @@ if(NOT stb_POPULATED)
     FetchContent_Populate(stb)
 endif()
 
+FetchContent_Declare(
+    cgltf
+    GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
+    GIT_TAG        v1.14
+)
+FetchContent_GetProperties(cgltf)
+if(NOT cgltf_POPULATED)
+    FetchContent_Populate(cgltf)
+endif()
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CompileGlsl.cmake)
 
 peaberry_compile_glsl(PEABERRY_SHADER_SPIRV

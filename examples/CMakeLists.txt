@@ -17,6 +17,7 @@ FetchContent_MakeAvailable(glfw)
 
 add_library(peaberry_example_wsi STATIC
     common/wsi.c
+    common/camera.c
 )
 
 target_include_directories(peaberry_example_wsi
@@ -69,5 +70,16 @@ target_compile_definitions(peaberry_sphere PRIVATE
 add_dependencies(peaberry_sphere peaberry_shaders)
 
 set_target_properties(peaberry_sphere PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
+)
+
+add_executable(peaberry_gltf gltf/main.c)
+target_link_libraries(peaberry_gltf PRIVATE peaberry_example_wsi m)
+target_compile_definitions(peaberry_gltf PRIVATE
+    PEABERRY_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders"
+)
+add_dependencies(peaberry_gltf peaberry_shaders)
+
+set_target_properties(peaberry_gltf PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
 )

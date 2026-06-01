@@ -743,6 +743,11 @@ bool pb_example_wsi_begin_frame(pb_example_wsi *wsi, float r, float g, float b, 
         return false;
     }
 
+    /* Viewport / render area must match the active swapchain extent. */
+    if (wsi->extent.width == 0 || wsi->extent.height == 0) {
+        return false;
+    }
+
     wsi->clear_color[0] = r;
     wsi->clear_color[1] = g;
     wsi->clear_color[2] = b;

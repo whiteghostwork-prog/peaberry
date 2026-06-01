@@ -9,6 +9,7 @@
 #include "peaberry/peaberry.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <volk.h>
 
@@ -35,6 +36,19 @@ bool pb_rhi_texture_create_2d(
 bool pb_rhi_texture_create_from_file(
     pb_context *context,
     const char *path,
+    bool srgb,
+    pb_rhi_texture *texture);
+
+bool pb_rhi_texture_create_from_memory(
+    pb_context *context,
+    const void *data,
+    size_t data_size,
+    bool srgb,
+    pb_rhi_texture *texture);
+
+bool pb_rhi_texture_create_solid_rgba8(
+    pb_context *context,
+    const uint8_t rgba[4],
     bool srgb,
     pb_rhi_texture *texture);
 

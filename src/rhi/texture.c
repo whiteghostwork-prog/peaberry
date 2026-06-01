@@ -15,6 +15,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#include <limits.h>
+
 static void texture_reset(pb_rhi_texture *texture)
 {
     *texture = (pb_rhi_texture){0};
@@ -313,30 +315,15 @@ bool pb_rhi_texture_upload_rgba32f(
     return true;
 }
 
-bool pb_rhi_texture_create_from_file(
+static bool create_rgba8_texture_from_pixels(
     pb_context *context,
-    const char *path,
+    const stbi_uc *pixels,
+    int width,
+    int height,
     bool srgb,
     pb_rhi_texture *texture)
 {
-    if (!context || !path || !texture) {
-        return false;
-    }
-
-    if (!pb_context_device_ready(context)) {
-        pb_log_error("Vulkan device is not initialized");
-        return false;
-    }
-
-    texture_reset(texture);
-
-    int width = 0;
-    int height = 0;
-    int channels = 0;
-    stbi_uc *pixels = stbi_load(path, &width, &height, &channels, STBI_rgb_alpha);
     if (!pixels || width <= 0 || height <= 0) {
-        pb_log_error("Failed to load texture: %s", path);
-        stbi_image_free(pixels);
         return false;
     }
 
@@ -351,7 +338,6 @@ bool pb_rhi_texture_create_from_file(
             format,
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
             texture)) {
-        stbi_image_free(pixels);
         return false;
     }
 
@@ -363,19 +349,15 @@ bool pb_rhi_texture_create_from_file(
     };
 
     if (!pb_rhi_buffer_create(context, &staging_desc, &staging)) {
-        stbi_image_free(pixels);
         pb_rhi_texture_destroy(context, texture);
         return false;
     }
 
     if (!pb_rhi_buffer_upload(context, &staging, pixels, image_size)) {
-        stbi_image_free(pixels);
         pb_rhi_buffer_destroy(context, &staging);
         pb_rhi_texture_destroy(context, texture);
         return false;
     }
-
-    stbi_image_free(pixels);
 
     upload_context upload = {
         .texture = texture,
@@ -400,8 +382,97 @@ bool pb_rhi_texture_create_from_file(
         return false;
     }
 
-    pb_log_info("Loaded texture %s (%ux%u)", path, texture->width, texture->height);
     return true;
+}
+
+bool pb_rhi_texture_create_from_file(
+    pb_context *context,
+    const char *path,
+    bool srgb,
+    pb_rhi_texture *texture)
+{
+    if (!context || !path || !texture) {
+        return false;
+    }
+
+    if (!pb_context_device_ready(context)) {
+        pb_log_error("Vulkan device is not initialized");
+        return false;
+    }
+
+    texture_reset(texture);
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc *pixels = stbi_load(path, &width, &height, &channels, STBI_rgb_alpha);
+    if (!pixels) {
+        pb_log_error("Failed to load texture: %s", path);
+        return false;
+    }
+
+    const bool ok = create_rgba8_texture_from_pixels(context, pixels, width, height, srgb, texture);
+    stbi_image_free(pixels);
+
+    if (ok) {
+        pb_log_info("Loaded texture %s (%ux%u)", path, texture->width, texture->height);
+    }
+    return ok;
+}
+
+bool pb_rhi_texture_create_from_memory(
+    pb_context *context,
+    const void *data,
+    size_t data_size,
+    bool srgb,
+    pb_rhi_texture *texture)
+{
+    if (!context || !data || data_size == 0 || !texture) {
+        return false;
+    }
+
+    if (!pb_context_device_ready(context)) {
+        pb_log_error("Vulkan device is not initialized");
+        return false;
+    }
+
+    if (data_size > (size_t)INT_MAX) {
+        pb_log_error("Texture buffer too large for stb_image (%zu bytes)", data_size);
+        return false;
+    }
+
+    texture_reset(texture);
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc *pixels = stbi_load_from_memory(data, (int)data_size, &width, &height, &channels, STBI_rgb_alpha);
+    if (!pixels) {
+        pb_log_error("Failed to decode texture from memory");
+        return false;
+    }
+
+    const bool ok = create_rgba8_texture_from_pixels(context, pixels, width, height, srgb, texture);
+    stbi_image_free(pixels);
+    return ok;
+}
+
+bool pb_rhi_texture_create_solid_rgba8(
+    pb_context *context,
+    const uint8_t rgba[4],
+    bool srgb,
+    pb_rhi_texture *texture)
+{
+    if (!context || !rgba || !texture) {
+        return false;
+    }
+
+    if (!pb_context_device_ready(context)) {
+        return false;
+    }
+
+    texture_reset(texture);
+    return create_rgba8_texture_from_pixels(context, rgba, 1, 1, srgb, texture);
 }
 
 bool pb_rhi_texture_create_from_hdr_file(

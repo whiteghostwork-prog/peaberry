@@ -24,16 +24,57 @@
 
 static const float k_pi = 3.14159265358979323846f;
 
-typedef struct pb_rhi_mesh_vertex {
-    float pos[3];
-    float normal[3];
-    float uv[2];
-    float tangent[4];
-} pb_rhi_mesh_vertex;
-
 static void mesh_reset(pb_rhi_mesh *mesh)
 {
     *mesh = (pb_rhi_mesh){0};
+}
+
+bool pb_rhi_mesh_create_interleaved(
+    pb_context *context,
+    const pb_pbr_vertex *vertices,
+    uint32_t vertex_count,
+    const void *indices,
+    uint32_t index_count,
+    VkIndexType index_type,
+    pb_rhi_mesh *mesh)
+{
+    if (!context || !vertices || !indices || vertex_count == 0 || index_count == 0 || !mesh) {
+        return false;
+    }
+
+    mesh_reset(mesh);
+
+    const size_t vertex_bytes = (size_t)vertex_count * sizeof(*vertices);
+    const size_t index_bytes =
+        index_type == VK_INDEX_TYPE_UINT16 ? (size_t)index_count * sizeof(uint16_t)
+                                           : (size_t)index_count * sizeof(uint32_t);
+
+    pb_rhi_buffer_desc vertex_desc = {
+        .size = vertex_bytes,
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
+    };
+
+    pb_rhi_buffer_desc index_desc = {
+        .size = index_bytes,
+        .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
+    };
+
+    bool ok = pb_rhi_buffer_create(context, &vertex_desc, &mesh->vertices) &&
+              pb_rhi_buffer_upload(context, &mesh->vertices, vertices, vertex_bytes) &&
+              pb_rhi_buffer_create(context, &index_desc, &mesh->indices) &&
+              pb_rhi_buffer_upload(context, &mesh->indices, indices, index_bytes);
+
+    if (!ok) {
+        pb_log_error("Failed to upload interleaved mesh");
+        pb_rhi_mesh_destroy(context, mesh);
+        return false;
+    }
+
+    mesh->index_count = index_count;
+    mesh->index_type = index_type;
+    return true;
 }
 
 bool pb_rhi_mesh_create_uv_sphere(
@@ -52,7 +93,7 @@ bool pb_rhi_mesh_create_uv_sphere(
     const uint32_t vertex_count = (stacks + 1) * (sectors + 1);
     const uint32_t index_capacity = stacks * sectors * 6;
 
-    pb_rhi_mesh_vertex *vertices = calloc(vertex_count, sizeof(*vertices));
+    pb_pbr_vertex *vertices = calloc(vertex_count, sizeof(*vertices));
     uint32_t *indices = calloc(index_capacity, sizeof(*indices));
     if (!vertices || !indices) {
         free(vertices);
@@ -71,7 +112,7 @@ bool pb_rhi_mesh_create_uv_sphere(
             const float x = xy * cosf(sector_angle);
             const float y = xy * sinf(sector_angle);
 
-            pb_rhi_mesh_vertex *vertex = &vertices[vertex_index++];
+            pb_pbr_vertex *vertex = &vertices[vertex_index++];
             vertex->pos[0] = x;
             vertex->pos[1] = y;
             vertex->pos[2] = z;
@@ -126,6 +167,7 @@ bool pb_rhi_mesh_create_uv_sphere(
               pb_rhi_buffer_upload(context, &mesh->indices, indices, index_desc.size);
 
     mesh->index_count = index;
+    mesh->index_type = VK_INDEX_TYPE_UINT32;
 
     free(vertices);
     free(indices);

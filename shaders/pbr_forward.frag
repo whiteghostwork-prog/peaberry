@@ -1,7 +1,6 @@
 #version 450
 
 layout(set = 0, binding = 0) uniform FrameData {
-    mat4 model;
     mat4 view;
     mat4 proj;
     vec3 camera_pos;
@@ -15,6 +14,9 @@ layout(set = 0, binding = 1) uniform MaterialLight {
     float metallic_factor;
     vec3 light_color;
     float roughness_factor;
+    float occlusion_strength;
+    vec3 emissive_factor;
+    float _pad1;
 } material;
 
 layout(set = 0, binding = 2) uniform sampler2D u_albedo;
@@ -23,6 +25,8 @@ layout(set = 0, binding = 4) uniform sampler2D u_normal;
 layout(set = 0, binding = 5) uniform samplerCube u_irradiance;
 layout(set = 0, binding = 6) uniform samplerCube u_prefilter;
 layout(set = 0, binding = 7) uniform sampler2D u_brdf_lut;
+layout(set = 0, binding = 8) uniform sampler2D u_occlusion;
+layout(set = 0, binding = 9) uniform sampler2D u_emissive;
 
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_normal;
@@ -89,8 +93,13 @@ void main()
     roughness = clamp(roughness, 0.04, 1.0);
 
     vec3 tangent_normal = texture(u_normal, v_uv).rgb * 2.0 - 1.0;
-    mat3 TBN = mat3(normalize(v_tangent), normalize(v_bitangent), normalize(v_normal));
-    vec3 N = normalize(TBN * tangent_normal);
+    vec3 T = normalize(v_tangent);
+    vec3 B = normalize(v_bitangent);
+    vec3 N_geom = normalize(v_normal);
+    vec3 N = N_geom;
+    if (length(cross(N_geom, T)) > 1e-4) {
+        N = normalize(mat3(T, B, N_geom) * tangent_normal);
+    }
 
     vec3 V = normalize(frame.camera_pos - v_world_pos);
     vec3 L = normalize(material.light_dir);
@@ -121,7 +130,15 @@ void main()
     vec3 specular_ibl = prefiltered * (fresnel_schlick_roughness(max(dot(N, V), 0.0), F0, roughness) * brdf.x + brdf.y);
 
     vec3 ambient = kD * diffuse_ibl + specular_ibl;
-    vec3 color = direct + ambient;
+
+    /* occlusion: sample R channel, mix with strength, modulate ambient + direct */
+    float occlusion = mix(1.0, texture(u_occlusion, v_uv).r, material.occlusion_strength);
+
+    vec3 color = (direct + ambient) * occlusion;
+
+    /* emissive: add unlit contribution */
+    vec3 emissive = texture(u_emissive, v_uv).rgb * material.emissive_factor;
+    color += emissive;
 
     color = aces_tonemap(color * frame.exposure);
     color = pow(color, vec3(1.0 / 2.2));

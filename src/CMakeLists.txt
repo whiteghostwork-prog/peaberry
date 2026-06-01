@@ -17,7 +17,10 @@ add_library(peaberry STATIC
     rhi/texture.c
     rhi/triangle.c
     pbr/ibl.c
+    pbr/pbr_forward_pass.c
     pbr/sphere_pass.c
+    load/gltf.c
+    load/tangent.c
 )
 
 add_dependencies(peaberry peaberry_shaders)
@@ -28,6 +31,7 @@ target_include_directories(peaberry
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${stb_SOURCE_DIR}
+        ${cgltf_SOURCE_DIR}
 )
 
 target_compile_definitions(peaberry
