@@ -22,6 +22,7 @@
 #include <volk.h>
 
 bool pb_context_init_device(pb_context *ctx, VkSurfaceKHR surface);
+bool pb_context_init_headless_device(pb_context *ctx);
 
 VkInstance pb_context_instance(const pb_context *ctx);
 VkPhysicalDevice pb_context_physical_device(const pb_context *ctx);

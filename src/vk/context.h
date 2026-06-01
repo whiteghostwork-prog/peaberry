@@ -39,6 +39,7 @@ bool pb_vk_context_init_instance(
     bool enable_validation,
     bool enable_surface);
 bool pb_vk_context_init_device(pb_vk_context *ctx, VkSurfaceKHR surface);
+bool pb_vk_context_init_headless_device(pb_vk_context *ctx);
 void pb_vk_context_shutdown(pb_vk_context *ctx);
 
 #endif

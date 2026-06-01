@@ -76,6 +76,20 @@ bool pb_context_init_device(pb_context *ctx, VkSurfaceKHR surface)
     return pb_vk_context_init_device(&ctx->vk, surface);
 }
 
+bool pb_context_init_headless_device(pb_context *ctx)
+{
+    if (!ctx) {
+        return false;
+    }
+
+    if (ctx->vk.surface_enabled) {
+        pb_log_error("Headless device init requires enable_surface = false");
+        return false;
+    }
+
+    return pb_vk_context_init_headless_device(&ctx->vk);
+}
+
 VkInstance pb_context_instance(const pb_context *ctx)
 {
     return ctx ? ctx->vk.instance : VK_NULL_HANDLE;

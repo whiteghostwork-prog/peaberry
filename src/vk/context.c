@@ -118,23 +118,35 @@ static bool pick_queue_families(
     *present_family = UINT32_MAX;
 
     for (uint32_t i = 0; i < count; ++i) {
-        if (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+        if ((*graphics_family == UINT32_MAX) && (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
             *graphics_family = i;
         }
 
-        VkBool32 present_support = VK_FALSE;
-        vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, i, surface, &present_support);
-        if (present_support) {
-            *present_family = i;
+        if (surface != VK_NULL_HANDLE) {
+            VkBool32 present_support = VK_FALSE;
+            vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, i, surface, &present_support);
+            if (present_support) {
+                *present_family = i;
+            }
         }
 
-        if (*graphics_family != UINT32_MAX && *present_family != UINT32_MAX) {
+        if (*graphics_family != UINT32_MAX && (surface == VK_NULL_HANDLE || *present_family != UINT32_MAX)) {
             break;
         }
     }
 
     free(families);
-    return *graphics_family != UINT32_MAX && *present_family != UINT32_MAX;
+
+    if (*graphics_family == UINT32_MAX) {
+        return false;
+    }
+
+    if (surface == VK_NULL_HANDLE) {
+        *present_family = *graphics_family;
+        return true;
+    }
+
+    return *present_family != UINT32_MAX;
 }
 
 static bool pick_physical_device(
@@ -171,7 +183,7 @@ static bool pick_physical_device(
         return true;
     }
 
-    pb_log_error("No suitable GPU queue families for surface present");
+    pb_log_error("No suitable GPU queue families found");
     free(devices);
     return false;
 }
@@ -324,7 +336,11 @@ bool pb_vk_context_init_device(pb_vk_context *ctx, VkSurfaceKHR surface)
         };
     }
 
-    const char *device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const char *device_extensions[1];
+    uint32_t device_extension_count = 0;
+    if (surface != VK_NULL_HANDLE) {
+        device_extensions[device_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    }
 
     VkPhysicalDeviceFeatures device_features = {0};
 
@@ -332,8 +348,8 @@ bool pb_vk_context_init_device(pb_vk_context *ctx, VkSurfaceKHR surface)
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = queue_info_count,
         .pQueueCreateInfos = queue_infos,
-        .enabledExtensionCount = 1,
-        .ppEnabledExtensionNames = device_extensions,
+        .enabledExtensionCount = device_extension_count,
+        .ppEnabledExtensionNames = device_extension_count > 0 ? device_extensions : NULL,
         .pEnabledFeatures = &device_features,
     };
 
@@ -353,4 +369,9 @@ bool pb_vk_context_init_device(pb_vk_context *ctx, VkSurfaceKHR surface)
     }
 
     return true;
+}
+
+bool pb_vk_context_init_headless_device(pb_vk_context *ctx)
+{
+    return pb_vk_context_init_device(ctx, VK_NULL_HANDLE);
 }

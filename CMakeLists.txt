@@ -11,6 +11,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(PEABERRY_BUILD_EXAMPLES "Build peaberry examples" ON)
+option(PEABERRY_BUILD_TESTS "Build and register peaberry tests" ON)
 option(PEABERRY_ENABLE_VALIDATION "Enable Vulkan validation layers" ON)
 
 find_package(Vulkan REQUIRED)
@@ -60,6 +61,11 @@ peaberry_compile_glsl(PEABERRY_SHADER_SPIRV
 )
 
 add_subdirectory(src)
+
+if(PEABERRY_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 if(PEABERRY_BUILD_EXAMPLES)
     add_subdirectory(examples)

@@ -1,0 +1,53 @@
+# Copyright 2026 The Peaberry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            git \
+            pkg-config \
+            glslang-tools \
+            libvulkan-dev \
+            vulkan-tools \
+            mesa-vulkan-drivers \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DPEABERRY_BUILD_EXAMPLES=ON \
+            -DPEABERRY_BUILD_TESTS=ON \
+            -DPEABERRY_ENABLE_VALIDATION=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Verify SPIR-V shaders
+        run: |
+          test -f build/shaders/pbr_forward.vert.spv
+          test -f build/shaders/pbr_forward.frag.spv
+          test -f build/shaders/brdf_lut.frag.spv
