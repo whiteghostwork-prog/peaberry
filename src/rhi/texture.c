@@ -1,17 +1,6 @@
 /*
  * Copyright 2026 The Peaberry Authors
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "rhi/texture.h"
@@ -21,6 +10,7 @@
 #include "peaberry/peaberry_vk.h"
 #include "rhi/alloc.h"
 #include "rhi/buffer.h"
+#include "rhi/cmd_submit.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -30,184 +20,55 @@ static void texture_reset(pb_rhi_texture *texture)
     *texture = (pb_rhi_texture){0};
 }
 
-static bool submit_one_shot(
+static bool create_sampler(
     pb_context *context,
-    void (*record)(VkCommandBuffer cmd, void *user_data),
-    void *user_data)
+    pb_rhi_texture *texture,
+    VkSamplerAddressMode address_mode,
+    float max_lod)
 {
     VkDevice device = pb_context_device(context);
-    VkQueue queue = pb_context_graphics_queue(context);
 
-    VkCommandPoolCreateInfo pool_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-        .queueFamilyIndex = pb_context_graphics_queue_family(context),
+    VkSamplerCreateInfo sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .addressModeU = address_mode,
+        .addressModeV = address_mode,
+        .addressModeW = address_mode,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .maxLod = max_lod,
     };
 
-    VkCommandPool pool = VK_NULL_HANDLE;
-    if (vkCreateCommandPool(device, &pool_info, NULL, &pool) != VK_SUCCESS) {
-        return false;
-    }
-
-    VkCommandBufferAllocateInfo alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = pool,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    };
-
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    if (vkAllocateCommandBuffers(device, &alloc_info, &cmd) != VK_SUCCESS) {
-        vkDestroyCommandPool(device, pool, NULL);
-        return false;
-    }
-
-    VkFenceCreateInfo fence_info = {
-        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-    };
-
-    VkFence fence = VK_NULL_HANDLE;
-    if (vkCreateFence(device, &fence_info, NULL, &fence) != VK_SUCCESS) {
-        vkDestroyCommandPool(device, pool, NULL);
-        return false;
-    }
-
-    VkCommandBufferBeginInfo begin_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    };
-
-    bool ok = vkBeginCommandBuffer(cmd, &begin_info) == VK_SUCCESS;
-    if (ok) {
-        record(cmd, user_data);
-        ok = vkEndCommandBuffer(cmd) == VK_SUCCESS;
-    }
-
-    if (ok) {
-        VkSubmitInfo submit_info = {
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &cmd,
-        };
-        ok = vkQueueSubmit(queue, 1, &submit_info, fence) == VK_SUCCESS;
-    }
-
-    if (ok) {
-        ok = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
-    }
-
-    vkDestroyFence(device, fence, NULL);
-    vkDestroyCommandPool(device, pool, NULL);
-    return ok;
+    return vkCreateSampler(device, &sampler_info, NULL, &texture->sampler) == VK_SUCCESS;
 }
 
-typedef struct upload_context {
-    pb_rhi_texture *texture;
-    pb_rhi_buffer *staging;
-    VkDeviceSize image_size;
-} upload_context;
-
-static void record_texture_upload(VkCommandBuffer cmd, void *user_data)
-{
-    upload_context *ctx = user_data;
-    pb_rhi_texture *texture = ctx->texture;
-
-    VkImageMemoryBarrier to_transfer = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .srcAccessMask = 0,
-        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .image = texture->image,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .levelCount = 1,
-            .layerCount = 1,
-        },
-    };
-
-    vkCmdPipelineBarrier(
-        cmd,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0,
-        0,
-        NULL,
-        0,
-        NULL,
-        1,
-        &to_transfer);
-
-    VkBufferImageCopy region = {
-        .bufferOffset = 0,
-        .imageSubresource = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .layerCount = 1,
-        },
-        .imageExtent = {
-            .width = texture->width,
-            .height = texture->height,
-            .depth = 1,
-        },
-    };
-
-    vkCmdCopyBufferToImage(
-        cmd,
-        pb_rhi_buffer_handle(ctx->staging),
-        texture->image,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        1,
-        &region);
-
-    VkImageMemoryBarrier to_shader = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        .image = texture->image,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .levelCount = 1,
-            .layerCount = 1,
-        },
-    };
-
-    vkCmdPipelineBarrier(
-        cmd,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0,
-        0,
-        NULL,
-        0,
-        NULL,
-        1,
-        &to_shader);
-}
-
-static bool create_image(
+static bool create_image_internal(
     pb_context *context,
     uint32_t width,
     uint32_t height,
+    uint32_t mip_levels,
     VkFormat format,
+    VkImageUsageFlags usage,
     pb_rhi_texture *texture)
 {
     const pb_vk_context *vk = &context->vk;
     VkDevice device = vk->device;
 
     texture->format = format;
+    texture->width = width;
+    texture->height = height;
+    texture->mip_levels = mip_levels;
 
     VkImageCreateInfo image_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = format,
         .extent = { width, height, 1 },
-        .mipLevels = 1,
+        .mipLevels = mip_levels,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .usage = usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -238,26 +99,22 @@ static bool create_image(
     };
 
     if (vkAllocateMemory(device, &alloc_info, NULL, &texture->memory) != VK_SUCCESS) {
-        pb_log_error("vkAllocateMemory failed for texture");
         vkDestroyImage(device, texture->image, NULL);
         texture_reset(texture);
         return false;
     }
 
     if (vkBindImageMemory(device, texture->image, texture->memory, 0) != VK_SUCCESS) {
-        pb_log_error("vkBindImageMemory failed");
         vkFreeMemory(device, texture->memory, NULL);
         vkDestroyImage(device, texture->image, NULL);
         texture_reset(texture);
         return false;
     }
 
-    texture->width = width;
-    texture->height = height;
     return true;
 }
 
-static bool create_view_and_sampler(pb_context *context, pb_rhi_texture *texture)
+static bool create_view(pb_context *context, pb_rhi_texture *texture)
 {
     VkDevice device = pb_context_device(context);
 
@@ -268,35 +125,191 @@ static bool create_view_and_sampler(pb_context *context, pb_rhi_texture *texture
         .format = texture->format,
         .subresourceRange = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .levelCount = 1,
+            .levelCount = texture->mip_levels,
             .layerCount = 1,
         },
     };
 
-    if (vkCreateImageView(device, &view_info, NULL, &texture->view) != VK_SUCCESS) {
-        pb_log_error("vkCreateImageView failed");
-        return false;
+    return vkCreateImageView(device, &view_info, NULL, &texture->view) == VK_SUCCESS;
+}
+
+void pb_rhi_texture_transition_layout(
+    VkCommandBuffer cmd,
+    pb_rhi_texture *texture,
+    VkImageLayout old_layout,
+    VkImageLayout new_layout,
+    uint32_t mip_levels,
+    uint32_t layer_count)
+{
+    VkPipelineStageFlags src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkPipelineStageFlags dst_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkAccessFlags src_access = 0;
+    VkAccessFlags dst_access = 0;
+
+    if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+        src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        src_access = 0;
+    } else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        src_access = VK_ACCESS_TRANSFER_WRITE_BIT;
+    } else if (old_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+        src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        src_access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    } else if (old_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        src_access = VK_ACCESS_SHADER_READ_BIT;
     }
 
-    VkSamplerCreateInfo sampler_info = {
-        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_LINEAR,
-        .minFilter = VK_FILTER_LINEAR,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .anisotropyEnable = VK_FALSE,
-        .maxAnisotropy = 1.0f,
-        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-        .unnormalizedCoordinates = VK_FALSE,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+    if (new_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dst_access = VK_ACCESS_TRANSFER_WRITE_BIT;
+    } else if (new_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+        dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dst_access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    } else if (new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dst_access = VK_ACCESS_SHADER_READ_BIT;
+    }
+
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = src_access,
+        .dstAccessMask = dst_access,
+        .oldLayout = old_layout,
+        .newLayout = new_layout,
+        .image = texture->image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = mip_levels,
+            .layerCount = layer_count,
+        },
     };
 
-    if (vkCreateSampler(device, &sampler_info, NULL, &texture->sampler) != VK_SUCCESS) {
-        pb_log_error("vkCreateSampler failed");
+    vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
+}
+
+typedef struct upload_context {
+    pb_rhi_texture *texture;
+    pb_rhi_buffer *staging;
+} upload_context;
+
+static void record_texture_upload(VkCommandBuffer cmd, void *user_data)
+{
+    upload_context *ctx = user_data;
+    pb_rhi_texture *texture = ctx->texture;
+
+    pb_rhi_texture_transition_layout(
+        cmd,
+        texture,
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        1);
+
+    VkBufferImageCopy region = {
+        .bufferOffset = 0,
+        .imageSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+        .imageExtent = {
+            .width = texture->width,
+            .height = texture->height,
+            .depth = 1,
+        },
+    };
+
+    vkCmdCopyBufferToImage(
+        cmd,
+        pb_rhi_buffer_handle(ctx->staging),
+        texture->image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &region);
+
+    pb_rhi_texture_transition_layout(
+        cmd,
+        texture,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        1,
+        1);
+}
+
+bool pb_rhi_texture_create_2d(
+    pb_context *context,
+    uint32_t width,
+    uint32_t height,
+    uint32_t mip_levels,
+    VkFormat format,
+    VkImageUsageFlags usage,
+    pb_rhi_texture *texture)
+{
+    if (!context || !texture || width == 0 || height == 0 || mip_levels == 0) {
         return false;
     }
 
+    texture_reset(texture);
+
+    if (!create_image_internal(context, width, height, mip_levels, format, usage, texture)) {
+        return false;
+    }
+
+    if (!create_view(context, texture)) {
+        pb_rhi_texture_destroy(context, texture);
+        return false;
+    }
+
+    if (!create_sampler(context, texture, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, (float)mip_levels)) {
+        pb_rhi_texture_destroy(context, texture);
+        return false;
+    }
+
+    return true;
+}
+
+bool pb_rhi_texture_upload_rgba32f(
+    pb_context *context,
+    pb_rhi_texture *texture,
+    const float *pixels,
+    uint32_t width,
+    uint32_t height)
+{
+    if (!context || !texture || !pixels || width != texture->width || height != texture->height) {
+        return false;
+    }
+
+    const VkDeviceSize image_size = (VkDeviceSize)width * (VkDeviceSize)height * 4 * sizeof(float);
+
+    pb_rhi_buffer staging = {0};
+    pb_rhi_buffer_desc staging_desc = {
+        .size = image_size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
+    };
+
+    if (!pb_rhi_buffer_create(context, &staging_desc, &staging)) {
+        return false;
+    }
+
+    if (!pb_rhi_buffer_upload(context, &staging, pixels, image_size)) {
+        pb_rhi_buffer_destroy(context, &staging);
+        return false;
+    }
+
+    upload_context upload = {
+        .texture = texture,
+        .staging = &staging,
+    };
+
+    if (!pb_rhi_submit_one_shot(context, record_texture_upload, &upload)) {
+        pb_rhi_buffer_destroy(context, &staging);
+        return false;
+    }
+
+    pb_rhi_buffer_destroy(context, &staging);
     return true;
 }
 
@@ -330,7 +343,14 @@ bool pb_rhi_texture_create_from_file(
     const VkFormat format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     const VkDeviceSize image_size = (VkDeviceSize)width * (VkDeviceSize)height * 4;
 
-    if (!create_image(context, (uint32_t)width, (uint32_t)height, format, texture)) {
+    if (!create_image_internal(
+            context,
+            (uint32_t)width,
+            (uint32_t)height,
+            1,
+            format,
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            texture)) {
         stbi_image_free(pixels);
         return false;
     }
@@ -343,14 +363,12 @@ bool pb_rhi_texture_create_from_file(
     };
 
     if (!pb_rhi_buffer_create(context, &staging_desc, &staging)) {
-        pb_log_error("Failed to create staging buffer for texture upload");
         stbi_image_free(pixels);
         pb_rhi_texture_destroy(context, texture);
         return false;
     }
 
     if (!pb_rhi_buffer_upload(context, &staging, pixels, image_size)) {
-        pb_log_error("Failed to upload staging buffer for texture");
         stbi_image_free(pixels);
         pb_rhi_buffer_destroy(context, &staging);
         pb_rhi_texture_destroy(context, texture);
@@ -362,11 +380,9 @@ bool pb_rhi_texture_create_from_file(
     upload_context upload = {
         .texture = texture,
         .staging = &staging,
-        .image_size = image_size,
     };
 
-    if (!submit_one_shot(context, record_texture_upload, &upload)) {
-        pb_log_error("Texture upload submit failed");
+    if (!pb_rhi_submit_one_shot(context, record_texture_upload, &upload)) {
         pb_rhi_buffer_destroy(context, &staging);
         pb_rhi_texture_destroy(context, texture);
         return false;
@@ -374,12 +390,68 @@ bool pb_rhi_texture_create_from_file(
 
     pb_rhi_buffer_destroy(context, &staging);
 
-    if (!create_view_and_sampler(context, texture)) {
+    if (!create_view(context, texture)) {
+        pb_rhi_texture_destroy(context, texture);
+        return false;
+    }
+
+    if (!create_sampler(context, texture, VK_SAMPLER_ADDRESS_MODE_REPEAT, 1.0f)) {
         pb_rhi_texture_destroy(context, texture);
         return false;
     }
 
     pb_log_info("Loaded texture %s (%ux%u)", path, texture->width, texture->height);
+    return true;
+}
+
+bool pb_rhi_texture_create_from_hdr_file(
+    pb_context *context,
+    const char *path,
+    pb_rhi_texture *texture)
+{
+    if (!context || !path || !texture) {
+        return false;
+    }
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    float *pixels = stbi_loadf(path, &width, &height, &channels, 4);
+    if (!pixels || width <= 0 || height <= 0) {
+        pb_log_error("Failed to load HDR texture: %s", path);
+        stbi_image_free(pixels);
+        return false;
+    }
+
+    texture_reset(texture);
+
+    if (!pb_rhi_texture_create_2d(
+            context,
+            (uint32_t)width,
+            (uint32_t)height,
+            1,
+            VK_FORMAT_R32G32B32A32_SFLOAT,
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            texture)) {
+        stbi_image_free(pixels);
+        return false;
+    }
+
+    const bool ok = pb_rhi_texture_upload_rgba32f(
+        context,
+        texture,
+        pixels,
+        (uint32_t)width,
+        (uint32_t)height);
+
+    stbi_image_free(pixels);
+
+    if (!ok) {
+        pb_rhi_texture_destroy(context, texture);
+        return false;
+    }
+
+    pb_log_info("Loaded HDR texture %s (%ux%u)", path, texture->width, texture->height);
     return true;
 }
 

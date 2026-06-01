@@ -8,11 +8,15 @@ add_library(peaberry STATIC
     vk/context.c
     rhi/alloc.c
     rhi/buffer.c
+    rhi/cmd_submit.c
+    rhi/cubemap.c
     rhi/mesh.c
+    rhi/offscreen.c
     rhi/quad.c
     rhi/shader.c
     rhi/texture.c
     rhi/triangle.c
+    pbr/ibl.c
     pbr/sphere_pass.c
 )
 

@@ -1,17 +1,6 @@
 /*
  * Copyright 2026 The Peaberry Authors
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef PEABERRY_RHI_TEXTURE_H
@@ -20,6 +9,7 @@
 #include "peaberry/peaberry.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <volk.h>
 
 typedef struct pb_rhi_texture {
@@ -30,13 +20,44 @@ typedef struct pb_rhi_texture {
     VkFormat format;
     uint32_t width;
     uint32_t height;
+    uint32_t mip_levels;
 } pb_rhi_texture;
+
+bool pb_rhi_texture_create_2d(
+    pb_context *context,
+    uint32_t width,
+    uint32_t height,
+    uint32_t mip_levels,
+    VkFormat format,
+    VkImageUsageFlags usage,
+    pb_rhi_texture *texture);
 
 bool pb_rhi_texture_create_from_file(
     pb_context *context,
     const char *path,
     bool srgb,
     pb_rhi_texture *texture);
+
+bool pb_rhi_texture_create_from_hdr_file(
+    pb_context *context,
+    const char *path,
+    pb_rhi_texture *texture);
+
+bool pb_rhi_texture_upload_rgba32f(
+    pb_context *context,
+    pb_rhi_texture *texture,
+    const float *pixels,
+    uint32_t width,
+    uint32_t height);
+
+void pb_rhi_texture_transition_layout(
+    VkCommandBuffer cmd,
+    pb_rhi_texture *texture,
+    VkImageLayout old_layout,
+    VkImageLayout new_layout,
+    uint32_t mip_levels,
+    uint32_t layer_count);
+
 void pb_rhi_texture_destroy(pb_context *context, pb_rhi_texture *texture);
 
 #endif

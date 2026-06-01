@@ -86,9 +86,12 @@ int main(void)
         .albedo_texture_path = g_albedo_tex,
         .metallic_roughness_texture_path = g_mr_tex,
         .normal_texture_path = g_normal_tex,
+        .ibl_shader_dir = PEABERRY_SHADER_DIR,
+        .ibl_equirect_hdr_path = NULL,
         .albedo_factor = { 1.0f, 1.0f, 1.0f },
         .metallic_factor = 1.0f,
         .roughness_factor = 1.0f,
+        .exposure = 1.2f,
     };
 
     pb_sphere_pass *sphere = pb_sphere_pass_create(&pass_desc);

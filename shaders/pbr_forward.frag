@@ -5,6 +5,7 @@ layout(set = 0, binding = 0) uniform FrameData {
     mat4 view;
     mat4 proj;
     vec3 camera_pos;
+    float exposure;
 } frame;
 
 layout(set = 0, binding = 1) uniform MaterialLight {
@@ -19,6 +20,9 @@ layout(set = 0, binding = 1) uniform MaterialLight {
 layout(set = 0, binding = 2) uniform sampler2D u_albedo;
 layout(set = 0, binding = 3) uniform sampler2D u_metallic_roughness;
 layout(set = 0, binding = 4) uniform sampler2D u_normal;
+layout(set = 0, binding = 5) uniform samplerCube u_irradiance;
+layout(set = 0, binding = 6) uniform samplerCube u_prefilter;
+layout(set = 0, binding = 7) uniform sampler2D u_brdf_lut;
 
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_normal;
@@ -29,6 +33,7 @@ layout(location = 4) in vec3 v_bitangent;
 layout(location = 0) out vec4 out_color;
 
 const float PI = 3.14159265359;
+const float MAX_REFLECTION_LOD = 4.0;
 
 float distribution_ggx(vec3 N, vec3 H, float roughness)
 {
@@ -58,6 +63,21 @@ float geometry_smith(vec3 N, vec3 V, vec3 L, float roughness)
 vec3 fresnel_schlick(float cos_theta, vec3 F0)
 {
     return F0 + (1.0 - F0) * pow(1.0 - cos_theta, 5.0);
+}
+
+vec3 fresnel_schlick_roughness(float cos_theta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - cos_theta, 5.0);
+}
+
+vec3 aces_tonemap(vec3 color)
+{
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
 }
 
 void main()
@@ -91,10 +111,19 @@ void main()
 
     vec3 radiance = material.light_color;
     vec3 direct = (kD * albedo / PI + specular) * radiance * NdotL;
-    vec3 ambient = vec3(0.015) * albedo;
-    vec3 color = ambient + direct;
 
-    color = color / (color + vec3(1.0));
+    vec3 irradiance = texture(u_irradiance, N).rgb;
+    vec3 diffuse_ibl = irradiance * albedo;
+
+    vec3 R = reflect(-V, N);
+    vec3 prefiltered = textureLod(u_prefilter, R, roughness * MAX_REFLECTION_LOD).rgb;
+    vec2 brdf = texture(u_brdf_lut, vec2(max(dot(N, V), 0.0), roughness)).rg;
+    vec3 specular_ibl = prefiltered * (fresnel_schlick_roughness(max(dot(N, V), 0.0), F0, roughness) * brdf.x + brdf.y);
+
+    vec3 ambient = kD * diffuse_ibl + specular_ibl;
+    vec3 color = direct + ambient;
+
+    color = aces_tonemap(color * frame.exposure);
     color = pow(color, vec3(1.0 / 2.2));
 
     out_color = vec4(color, 1.0);

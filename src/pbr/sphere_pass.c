@@ -17,6 +17,7 @@
 #include "peaberry/peaberry_render.h"
 
 #include "peaberry/peaberry_math.h"
+#include "pbr/ibl.h"
 #include "rhi/buffer.h"
 #include "rhi/mesh.h"
 #include "rhi/texture.h"
@@ -34,7 +35,7 @@ typedef struct pb_frame_ubo {
     pb_mat4 view;
     pb_mat4 proj;
     float camera_pos[3];
-    float _pad0;
+    float exposure;
 } pb_frame_ubo;
 
 typedef struct pb_material_ubo {
@@ -58,10 +59,13 @@ struct pb_sphere_pass {
     pb_rhi_texture albedo_texture;
     pb_rhi_texture metallic_roughness_texture;
     pb_rhi_texture normal_texture;
+    pb_ibl_environment ibl;
     pb_rhi_mesh mesh;
     VkShaderModule vert_module;
     VkShaderModule frag_module;
     pb_material_ubo material;
+    float exposure;
+    float prefilter_max_lod;
 };
 
 static bool create_uniform_buffers(struct pb_sphere_pass *pass)
@@ -115,11 +119,29 @@ static bool create_descriptor_set_layout(struct pb_sphere_pass *pass)
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
+        {
+            .binding = 5,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 6,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 7,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 5,
+        .bindingCount = 8,
         .pBindings = bindings,
     };
 
@@ -138,7 +160,7 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
         {
             .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 3,
+            .descriptorCount = 6,
         },
     };
 
@@ -194,6 +216,24 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
 
+    VkDescriptorImageInfo irradiance_info = {
+        .sampler = pass->ibl.irradiance.sampler,
+        .imageView = pass->ibl.irradiance.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
+    VkDescriptorImageInfo prefilter_info = {
+        .sampler = pass->ibl.prefilter.sampler,
+        .imageView = pass->ibl.prefilter.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
+    VkDescriptorImageInfo brdf_info = {
+        .sampler = pass->ibl.brdf_lut.sampler,
+        .imageView = pass->ibl.brdf_lut.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
     VkWriteDescriptorSet writes[] = {
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -235,9 +275,33 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
             .descriptorCount = 1,
             .pImageInfo = &normal_info,
         },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
+            .dstBinding = 5,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &irradiance_info,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
+            .dstBinding = 6,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &prefilter_info,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
+            .dstBinding = 7,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &brdf_info,
+        },
     };
 
-    vkUpdateDescriptorSets(device, 5, writes, 0, NULL);
+    vkUpdateDescriptorSets(device, 8, writes, 0, NULL);
     return true;
 }
 
@@ -417,6 +481,7 @@ static void update_uniforms(struct pb_sphere_pass *pass, VkExtent2D extent, floa
     frame.camera_pos[0] = eye[0];
     frame.camera_pos[1] = eye[1];
     frame.camera_pos[2] = eye[2];
+    frame.exposure = pass->exposure;
 
     pb_rhi_buffer_upload(pass->context, &pass->frame_buffer, &frame, sizeof(frame));
     pb_rhi_buffer_upload(pass->context, &pass->material_buffer, &pass->material, sizeof(pass->material));
@@ -425,7 +490,8 @@ static void update_uniforms(struct pb_sphere_pass *pass, VkExtent2D extent, floa
 pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
 {
     if (!desc || !desc->context || !desc->render_pass || !desc->vert_spv_path || !desc->frag_spv_path ||
-        !desc->albedo_texture_path || !desc->metallic_roughness_texture_path || !desc->normal_texture_path) {
+        !desc->albedo_texture_path || !desc->metallic_roughness_texture_path || !desc->normal_texture_path ||
+        !desc->ibl_shader_dir) {
         pb_log_error("Invalid PBR sphere pass description");
         return NULL;
     }
@@ -453,6 +519,7 @@ pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
     pass->material.light_dir[0] = 0.5f;
     pass->material.light_dir[1] = 0.8f;
     pass->material.light_dir[2] = 0.4f;
+    pass->exposure = desc->exposure > 0.0f ? desc->exposure : 1.0f;
 
     pb_rhi_mesh_uv_sphere_desc mesh_desc = {
         .radius = 1.0f,
@@ -468,12 +535,21 @@ pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
             pass->context, desc->metallic_roughness_texture_path, false, &pass->metallic_roughness_texture) ||
         !pb_rhi_texture_create_from_file(
             pass->context, desc->normal_texture_path, false, &pass->normal_texture) ||
+        !pb_ibl_environment_create(
+            &(pb_ibl_environment_desc){
+                .context = pass->context,
+                .equirect_hdr_path = desc->ibl_equirect_hdr_path,
+                .shader_dir = desc->ibl_shader_dir,
+            },
+            &pass->ibl) ||
         !create_descriptor_pool_and_set(pass) ||
         !pb_rhi_mesh_create_uv_sphere(pass->context, &mesh_desc, &pass->mesh) ||
         !create_pipeline(pass, desc)) {
         pb_sphere_pass_destroy(pass);
         return NULL;
     }
+
+    pass->prefilter_max_lod = pass->ibl.prefilter_max_lod;
 
     pb_log_info("PBR sphere pass ready");
     return pass;
@@ -507,6 +583,7 @@ void pb_sphere_pass_destroy(pb_sphere_pass *pass)
         pb_rhi_texture_destroy(pass->context, &pass->albedo_texture);
         pb_rhi_texture_destroy(pass->context, &pass->metallic_roughness_texture);
         pb_rhi_texture_destroy(pass->context, &pass->normal_texture);
+        pb_ibl_environment_destroy(pass->context, &pass->ibl);
         pb_rhi_mesh_destroy(pass->context, &pass->mesh);
         if (pass->vert_module) {
             vkDestroyShaderModule(device, pass->vert_module, NULL);

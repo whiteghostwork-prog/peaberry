@@ -5,6 +5,7 @@ layout(set = 0, binding = 0) uniform FrameData {
     mat4 view;
     mat4 proj;
     vec3 camera_pos;
+    float exposure;
 } frame;
 
 layout(location = 0) in vec3 in_pos;

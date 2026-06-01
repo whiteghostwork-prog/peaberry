@@ -66,9 +66,12 @@ typedef struct pb_sphere_pass_desc {
     const char *albedo_texture_path;
     const char *metallic_roughness_texture_path;
     const char *normal_texture_path;
+    const char *ibl_shader_dir;
+    const char *ibl_equirect_hdr_path;
     float albedo_factor[3];
     float metallic_factor;
     float roughness_factor;
+    float exposure;
 } pb_sphere_pass_desc;
 
 pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc);

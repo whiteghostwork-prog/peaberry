@@ -52,6 +52,11 @@ peaberry_compile_glsl(PEABERRY_SHADER_SPIRV
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/quad.frag
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/pbr_forward.vert
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/pbr_forward.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/fullscreen.vert
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/brdf_lut.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/equirect_to_cubemap.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/irradiance.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/prefilter.frag
 )
 
 add_subdirectory(src)
