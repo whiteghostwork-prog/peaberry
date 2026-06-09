@@ -32,5 +32,11 @@ typedef struct pb_bench_scenario {
 } pb_bench_scenario;
 
 bool pb_bench_scenario_clear_init(pb_bench_scenario *scenario, pb_context *context, VkExtent2D extent);
+bool pb_bench_scenario_sphere_init(pb_bench_scenario *scenario, pb_context *context, VkExtent2D extent);
+bool pb_bench_scenario_gltf_init(
+    pb_bench_scenario *scenario,
+    pb_context *context,
+    VkExtent2D extent,
+    const char *model_path);
 
 #endif

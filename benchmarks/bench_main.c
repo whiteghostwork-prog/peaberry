@@ -46,8 +46,8 @@ static void print_usage(const char *prog)
         "\n"
         "Scenarios:\n"
         "  clear                 Empty render pass (clear only)\n"
-        "  sphere                PBR sphere (Phase 7.3)\n"
-        "  gltf <path>           glTF model (Phase 7.3)\n"
+        "  sphere                PBR sphere with IBL and material maps\n"
+        "  gltf <path>           glTF model via PBR forward pass\n"
         "\n"
         "Options:\n"
         "  --width W             Framebuffer width (default 1920)\n"
@@ -162,8 +162,7 @@ static bool init_scenario(
     }
 
     if (strcmp(cfg->scenario_name, "sphere") == 0) {
-        fprintf(stderr, "scenario '%s' is not implemented yet (Phase 7.3)\n", cfg->scenario_name);
-        return false;
+        return pb_bench_scenario_sphere_init(scenario, context, extent);
     }
 
     if (strcmp(cfg->scenario_name, "gltf") == 0) {
@@ -171,8 +170,7 @@ static bool init_scenario(
             fprintf(stderr, "gltf scenario requires a model path\n");
             return false;
         }
-        fprintf(stderr, "scenario '%s' is not implemented yet (Phase 7.3)\n", cfg->scenario_name);
-        return false;
+        return pb_bench_scenario_gltf_init(scenario, context, extent, cfg->scenario_arg);
     }
 
     fprintf(stderr, "unknown scenario: %s\n", cfg->scenario_name);

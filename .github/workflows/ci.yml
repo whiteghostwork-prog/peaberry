@@ -47,7 +47,10 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
       - name: Benchmark smoke
-        run: ./build/benchmarks/peaberry_bench clear --frames 10 --warmup 2
+        run: |
+          ./build/benchmarks/peaberry_bench clear --frames 10 --warmup 2
+          ./build/benchmarks/peaberry_bench sphere --frames 10 --warmup 2 --width 256 --height 256
+          ./build/benchmarks/peaberry_bench gltf assets/models/test_cube.gltf --frames 10 --warmup 2 --width 256 --height 256
 
       - name: Verify SPIR-V shaders
         run: |
