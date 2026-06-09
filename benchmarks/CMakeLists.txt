@@ -3,6 +3,7 @@
 
 add_executable(peaberry_bench
     bench_main.c
+    bench_baseline.c
     bench_stats.c
     bench_target.c
     scenario_clear.c

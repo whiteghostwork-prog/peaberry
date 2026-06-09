@@ -5,6 +5,7 @@
  * Headless GPU benchmark runner (Phase 7.2).
  */
 
+#include "bench_baseline.h"
 #include "bench_stats.h"
 #include "bench_target.h"
 #include "scenario.h"
@@ -55,7 +56,8 @@ static void print_usage(const char *prog)
         "  --frames N            Sample frames (default 100)\n"
         "  --warmup N            Warmup frames discarded (default 10)\n"
         "  --json                Print JSON instead of a table\n"
-        "  --baseline PATH       Compare p95 against baseline JSON\n"
+        "  --compare PATH        Compare p95 against baseline JSON\n"
+        "  --baseline PATH       Alias for --compare\n"
         "  --tolerance PCT       Regression tolerance percent (default 5)\n"
         "  --compare-config PATH Alternate pb_context config (Phase 8+)\n",
         prog);
@@ -77,6 +79,10 @@ static bool parse_u32(const char *text, uint32_t *out)
     return true;
 }
 
+enum {
+    PB_BENCH_OPT_COMPARE = 1001,
+};
+
 static bool parse_config(int argc, char **argv, pb_bench_config *cfg)
 {
     static struct option long_opts[] = {
@@ -86,6 +92,7 @@ static bool parse_config(int argc, char **argv, pb_bench_config *cfg)
         { "warmup", required_argument, NULL, 'u' },
         { "json", no_argument, NULL, 'j' },
         { "baseline", required_argument, NULL, 'b' },
+        { "compare", required_argument, NULL, PB_BENCH_OPT_COMPARE },
         { "tolerance", required_argument, NULL, 't' },
         { "compare-config", required_argument, NULL, 'c' },
         { "help", no_argument, NULL, '?' },
@@ -126,6 +133,9 @@ static bool parse_config(int argc, char **argv, pb_bench_config *cfg)
             cfg->json_output = true;
             break;
         case 'b':
+            cfg->baseline_path = optarg;
+            break;
+        case PB_BENCH_OPT_COMPARE:
             cfg->baseline_path = optarg;
             break;
         case 't':
@@ -177,7 +187,12 @@ static bool init_scenario(
     return false;
 }
 
-static bool run_benchmark(const pb_bench_config *cfg, pb_bench_metric_set *metrics, pb_bench_scenario_info *info)
+static bool run_benchmark(
+    const pb_bench_config *cfg,
+    pb_bench_metric_set *metrics,
+    pb_bench_scenario_info *info,
+    char *gpu_name,
+    size_t gpu_name_size)
 {
     pb_context *context = pb_context_create(
         &(pb_context_desc){
@@ -194,6 +209,12 @@ static bool run_benchmark(const pb_bench_config *cfg, pb_bench_metric_set *metri
         fprintf(stderr, "failed to initialize headless Vulkan device\n");
         pb_context_destroy(context);
         return false;
+    }
+
+    if (gpu_name && gpu_name_size > 0) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(pb_context_physical_device(context), &props);
+        snprintf(gpu_name, gpu_name_size, "%s", props.deviceName);
     }
 
     if (cfg->compare_config_path) {
@@ -351,11 +372,16 @@ static void print_json_uint64_field(FILE *out, const char *name, const pb_bench_
 static void print_json_report(
     const pb_bench_config *cfg,
     const pb_bench_metric_set *metrics,
-    const pb_bench_scenario_info *info)
+    const pb_bench_scenario_info *info,
+    const char *gpu_name)
 {
     FILE *out = cfg->json_output ? stdout : stdout;
     fprintf(out, "{\n");
-    fprintf(out, "  \"version\": 1,\n");
+    fprintf(out, "  \"version\": %u,\n", PB_BENCH_BASELINE_VERSION);
+    if (gpu_name && gpu_name[0] != '\0') {
+        fprintf(out, "  \"gpu\": \"%s\",\n", gpu_name);
+    }
+    fprintf(out, "  \"mode\": \"headless\",\n");
     fprintf(out, "  \"scenario\": \"%s\",\n", cfg->scenario_name);
     if (cfg->scenario_arg) {
         fprintf(out, "  \"scenario_arg\": \"%s\",\n", cfg->scenario_arg);
@@ -376,91 +402,30 @@ static void print_json_report(
     fprintf(out, "}\n");
 }
 
-static bool read_baseline_p95(const char *path, uint64_t *out_p95)
-{
-    FILE *file = fopen(path, "r");
-    if (!file) {
-        fprintf(stderr, "failed to open baseline: %s\n", path);
-        return false;
-    }
-
-    fseek(file, 0, SEEK_END);
-    const long size = ftell(file);
-    if (size <= 0) {
-        fclose(file);
-        return false;
-    }
-
-    fseek(file, 0, SEEK_SET);
-    char *text = malloc((size_t)size + 1);
-    if (!text) {
-        fclose(file);
-        return false;
-    }
-
-    const size_t read = fread(text, 1, (size_t)size, file);
-    fclose(file);
-    text[read] = '\0';
-
-    const char *section = strstr(text, "\"gpu_render_pass_ns\"");
-    if (!section) {
-        free(text);
-        fprintf(stderr, "baseline JSON missing gpu_render_pass_ns\n");
-        return false;
-    }
-
-    const char *p95_key = strstr(section, "\"p95\"");
-    if (!p95_key) {
-        free(text);
-        fprintf(stderr, "baseline JSON missing gpu_render_pass_ns.p95\n");
-        return false;
-    }
-
-    const char *colon = strchr(p95_key, ':');
-    if (!colon) {
-        free(text);
-        return false;
-    }
-
-    *out_p95 = strtoull(colon + 1, NULL, 10);
-    free(text);
-    return true;
-}
-
 static bool check_baseline(
     const pb_bench_config *cfg,
-    const pb_bench_metric_set *metrics)
+    const pb_bench_metric_set *metrics,
+    const char *gpu_name)
 {
     if (!cfg->baseline_path) {
         return true;
     }
 
-    uint64_t baseline_p95 = 0;
-    if (!read_baseline_p95(cfg->baseline_path, &baseline_p95)) {
+    pb_bench_baseline baseline;
+    if (!pb_bench_baseline_load(cfg->baseline_path, &baseline)) {
         return false;
     }
 
-    const uint64_t current_p95 = metrics->gpu_render_pass_ns.p95;
-    if (baseline_p95 == 0) {
-        return true;
-    }
+    const pb_bench_compare_run run = {
+        .scenario_name = cfg->scenario_name,
+        .scenario_arg = cfg->scenario_arg,
+        .width = cfg->width,
+        .height = cfg->height,
+        .gpu_name = gpu_name,
+        .gpu_render_pass_p95 = metrics->gpu_render_pass_ns.p95,
+    };
 
-    const double regression =
-        ((double)current_p95 - (double)baseline_p95) / (double)baseline_p95 * 100.0;
-    fprintf(
-        stderr,
-        "baseline compare: gpu_render_pass_ns p95 current=%.3f ms baseline=%.3f ms delta=%+.2f%% (tolerance %.1f%%)\n",
-        current_p95 / 1e6,
-        baseline_p95 / 1e6,
-        regression,
-        cfg->tolerance_percent);
-
-    if (regression > (double)cfg->tolerance_percent) {
-        fprintf(stderr, "benchmark regression exceeded tolerance\n");
-        return false;
-    }
-
-    return true;
+    return pb_bench_baseline_compare(&baseline, &run, cfg->tolerance_percent, NULL);
 }
 
 int main(int argc, char **argv)
@@ -473,17 +438,18 @@ int main(int argc, char **argv)
 
     pb_bench_metric_set metrics = {0};
     pb_bench_scenario_info info = {0};
-    if (!run_benchmark(&cfg, &metrics, &info)) {
+    char gpu_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE] = {0};
+    if (!run_benchmark(&cfg, &metrics, &info, gpu_name, sizeof(gpu_name))) {
         return EXIT_FAILURE;
     }
 
     if (cfg.json_output) {
-        print_json_report(&cfg, &metrics, &info);
+        print_json_report(&cfg, &metrics, &info, gpu_name);
     } else {
         print_human_report(&cfg, &metrics, &info);
     }
 
-    if (!check_baseline(&cfg, &metrics)) {
+    if (!check_baseline(&cfg, &metrics, gpu_name)) {
         return EXIT_FAILURE;
     }
 

@@ -5,6 +5,9 @@ compile_commands.json
 .DS_Store
 docs/
 README.md
+bench.json
+benchmarks/baselines/
+tests/benchmarks/
 
 # CMake (in-source build artifacts — always configure in build/)
 CMakeCache.txt
