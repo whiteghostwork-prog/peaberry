@@ -12,6 +12,8 @@ struct pb_rhi_query_pool {
     VkQueryPool handle;
     float timestamp_period_ns;
     bool timestamps_supported;
+    bool detailed;
+    uint32_t query_count;
 };
 
 #endif

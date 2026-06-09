@@ -20,7 +20,8 @@ bool pb_bench_target_create(
     pb_bench_target **out_target,
     pb_context *context,
     VkExtent2D extent,
-    pb_bench_scenario *scenario);
+    pb_bench_scenario *scenario,
+    bool detailed);
 
 void pb_bench_target_destroy(pb_bench_target *target);
 

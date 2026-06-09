@@ -26,6 +26,7 @@ typedef struct pb_bench_config {
     uint32_t warmup_frames;
     uint32_t sample_frames;
     bool json_output;
+    bool detailed;
     const char *baseline_path;
     float tolerance_percent;
     const char *compare_config_path;
@@ -36,6 +37,9 @@ typedef struct pb_bench_config {
 typedef struct pb_bench_metric_set {
     pb_bench_stats gpu_total_ns;
     pb_bench_stats gpu_render_pass_ns;
+    pb_bench_stats gpu_vertex_ns;
+    pb_bench_stats gpu_fragment_ns;
+    pb_bench_stats gpu_transfer_ns;
     pb_bench_stats cpu_submit_to_idle_ns;
 } pb_bench_metric_set;
 
@@ -56,6 +60,7 @@ static void print_usage(const char *prog)
         "  --frames N            Sample frames (default 100)\n"
         "  --warmup N            Warmup frames discarded (default 10)\n"
         "  --json                Print JSON instead of a table\n"
+        "  --detailed            Pipeline-stage GPU timestamps (vertex/fragment/transfer)\n"
         "  --compare PATH        Compare p95 against baseline JSON\n"
         "  --baseline PATH       Alias for --compare\n"
         "  --tolerance PCT       Regression tolerance percent (default 5)\n"
@@ -81,6 +86,7 @@ static bool parse_u32(const char *text, uint32_t *out)
 
 enum {
     PB_BENCH_OPT_COMPARE = 1001,
+    PB_BENCH_OPT_DETAILED = 1002,
 };
 
 static bool parse_config(int argc, char **argv, pb_bench_config *cfg)
@@ -93,6 +99,7 @@ static bool parse_config(int argc, char **argv, pb_bench_config *cfg)
         { "json", no_argument, NULL, 'j' },
         { "baseline", required_argument, NULL, 'b' },
         { "compare", required_argument, NULL, PB_BENCH_OPT_COMPARE },
+        { "detailed", no_argument, NULL, PB_BENCH_OPT_DETAILED },
         { "tolerance", required_argument, NULL, 't' },
         { "compare-config", required_argument, NULL, 'c' },
         { "help", no_argument, NULL, '?' },
@@ -137,6 +144,9 @@ static bool parse_config(int argc, char **argv, pb_bench_config *cfg)
             break;
         case PB_BENCH_OPT_COMPARE:
             cfg->baseline_path = optarg;
+            break;
+        case PB_BENCH_OPT_DETAILED:
+            cfg->detailed = true;
             break;
         case 't':
             cfg->tolerance_percent = strtof(optarg, NULL);
@@ -229,7 +239,7 @@ static bool run_benchmark(
     }
 
     pb_bench_target *target = NULL;
-    if (!pb_bench_target_create(&target, context, extent, &scenario)) {
+    if (!pb_bench_target_create(&target, context, extent, &scenario, cfg->detailed)) {
         fprintf(stderr, "failed to create benchmark render target\n");
         pb_context_destroy(context);
         return false;
@@ -239,10 +249,17 @@ static bool run_benchmark(
 
     uint64_t *gpu_total = calloc(cfg->sample_frames, sizeof(*gpu_total));
     uint64_t *gpu_render_pass = calloc(cfg->sample_frames, sizeof(*gpu_render_pass));
+    uint64_t *gpu_vertex = cfg->detailed ? calloc(cfg->sample_frames, sizeof(*gpu_vertex)) : NULL;
+    uint64_t *gpu_fragment = cfg->detailed ? calloc(cfg->sample_frames, sizeof(*gpu_fragment)) : NULL;
+    uint64_t *gpu_transfer = cfg->detailed ? calloc(cfg->sample_frames, sizeof(*gpu_transfer)) : NULL;
     uint64_t *cpu_submit = calloc(cfg->sample_frames, sizeof(*cpu_submit));
-    if (!gpu_total || !gpu_render_pass || !cpu_submit) {
+    if (!gpu_total || !gpu_render_pass || !cpu_submit ||
+        (cfg->detailed && (!gpu_vertex || !gpu_fragment || !gpu_transfer))) {
         free(gpu_total);
         free(gpu_render_pass);
+        free(gpu_vertex);
+        free(gpu_fragment);
+        free(gpu_transfer);
         free(cpu_submit);
         pb_bench_target_destroy(target);
         pb_context_destroy(context);
@@ -258,6 +275,9 @@ static bool run_benchmark(
             fprintf(stderr, "benchmark frame %u failed\n", frame);
             free(gpu_total);
             free(gpu_render_pass);
+            free(gpu_vertex);
+            free(gpu_fragment);
+            free(gpu_transfer);
             free(cpu_submit);
             pb_bench_target_destroy(target);
             pb_context_destroy(context);
@@ -268,6 +288,11 @@ static bool run_benchmark(
             gpu_total[sample_index] = bench_frame.gpu_total_ns;
             gpu_render_pass[sample_index] = bench_frame.gpu_render_pass_ns;
             cpu_submit[sample_index] = bench_frame.cpu_submit_to_idle_ns;
+            if (cfg->detailed) {
+                gpu_vertex[sample_index] = bench_frame.gpu_vertex_ns;
+                gpu_fragment[sample_index] = bench_frame.gpu_fragment_ns;
+                gpu_transfer[sample_index] = bench_frame.gpu_transfer_ns;
+            }
             sample_index++;
         }
     }
@@ -275,9 +300,17 @@ static bool run_benchmark(
     pb_bench_stats_compute(gpu_total, cfg->sample_frames, &metrics->gpu_total_ns);
     pb_bench_stats_compute(gpu_render_pass, cfg->sample_frames, &metrics->gpu_render_pass_ns);
     pb_bench_stats_compute(cpu_submit, cfg->sample_frames, &metrics->cpu_submit_to_idle_ns);
+    if (cfg->detailed) {
+        pb_bench_stats_compute(gpu_vertex, cfg->sample_frames, &metrics->gpu_vertex_ns);
+        pb_bench_stats_compute(gpu_fragment, cfg->sample_frames, &metrics->gpu_fragment_ns);
+        pb_bench_stats_compute(gpu_transfer, cfg->sample_frames, &metrics->gpu_transfer_ns);
+    }
 
     free(gpu_total);
     free(gpu_render_pass);
+    free(gpu_vertex);
+    free(gpu_fragment);
+    free(gpu_transfer);
     free(cpu_submit);
     pb_bench_target_destroy(target);
     pb_context_destroy(context);
@@ -326,12 +359,13 @@ static void print_human_report(
     const pb_bench_metric_set *metrics,
     const pb_bench_scenario_info *info)
 {
-    printf("peaberry_bench: %s (%ux%u, warmup=%u, samples=%u)\n",
+    printf("peaberry_bench: %s (%ux%u, warmup=%u, samples=%u%s)\n",
         cfg->scenario_name,
         cfg->width,
         cfg->height,
         cfg->warmup_frames,
-        cfg->sample_frames);
+        cfg->sample_frames,
+        cfg->detailed ? ", detailed" : "");
 
     printf("\n  workload\n");
     printf("  %10s %10s %10s %10s\n", "draws", "indices", "materials", "pixels");
@@ -346,6 +380,11 @@ static void print_human_report(
     print_stats_header();
     print_stats_row("gpu_total_ns", &metrics->gpu_total_ns);
     print_stats_row("gpu_render_pass_ns", &metrics->gpu_render_pass_ns);
+    if (cfg->detailed) {
+        print_stats_row("gpu_vertex_ns", &metrics->gpu_vertex_ns);
+        print_stats_row("gpu_fragment_ns", &metrics->gpu_fragment_ns);
+        print_stats_row("gpu_transfer_ns", &metrics->gpu_transfer_ns);
+    }
     print_stats_row("cpu_submit_to_idle_ns", &metrics->cpu_submit_to_idle_ns);
     printf("\n");
 }
@@ -388,6 +427,7 @@ static void print_json_report(
     }
     fprintf(out, "  \"resolution\": {\"width\": %u, \"height\": %u},\n", cfg->width, cfg->height);
     fprintf(out, "  \"frames\": {\"warmup\": %u, \"samples\": %u},\n", cfg->warmup_frames, cfg->sample_frames);
+    fprintf(out, "  \"detailed\": %s,\n", cfg->detailed ? "true" : "false");
     fprintf(out, "  \"info\": {\n");
     fprintf(out, "    \"draw_calls\": %u,\n", info->draw_calls);
     fprintf(out, "    \"index_count\": %u,\n", info->index_count);
@@ -397,6 +437,11 @@ static void print_json_report(
     fprintf(out, "  \"stats\": {\n");
     print_json_uint64_field(out, "gpu_total_ns", &metrics->gpu_total_ns, true);
     print_json_uint64_field(out, "gpu_render_pass_ns", &metrics->gpu_render_pass_ns, true);
+    if (cfg->detailed) {
+        print_json_uint64_field(out, "gpu_vertex_ns", &metrics->gpu_vertex_ns, true);
+        print_json_uint64_field(out, "gpu_fragment_ns", &metrics->gpu_fragment_ns, true);
+        print_json_uint64_field(out, "gpu_transfer_ns", &metrics->gpu_transfer_ns, true);
+    }
     print_json_uint64_field(out, "cpu_submit_to_idle_ns", &metrics->cpu_submit_to_idle_ns, false);
     fprintf(out, "  }\n");
     fprintf(out, "}\n");

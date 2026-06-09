@@ -38,8 +38,11 @@ void pb_bench_frame_zero(pb_bench_frame *frame);
 
 bool pb_bench_gpu_timestamps_available(pb_context *context);
 
-bool pb_rhi_query_pool_create(pb_context *context, pb_rhi_query_pool **out_pool);
+bool pb_rhi_query_pool_create(pb_context *context, bool detailed, pb_rhi_query_pool **out_pool);
 void pb_rhi_query_pool_destroy(pb_context *context, pb_rhi_query_pool *pool);
+
+uint32_t pb_rhi_query_pool_query_count(const pb_rhi_query_pool *pool);
+bool pb_rhi_query_pool_is_detailed(const pb_rhi_query_pool *pool);
 
 void pb_rhi_query_pool_cmd_reset(VkCommandBuffer cmd, const pb_rhi_query_pool *pool);
 
@@ -50,11 +53,20 @@ void pb_rhi_query_pool_write_timestamp(
     VkPipelineStageFlagBits stage);
 
 /*
- * Standard four-query layout used by the benchmark runner:
+ * Basic four-query layout:
  *   0 cmd start (TOP_OF_PIPE)
  *   1 render pass start (COLOR_ATTACHMENT_OUTPUT)
  *   2 render pass end   (COLOR_ATTACHMENT_OUTPUT)
  *   3 cmd end           (BOTTOM_OF_PIPE)
+ *
+ * Detailed seven-query layout (--detailed):
+ *   0 cmd start
+ *   1 render pass start
+ *   2 vertex shader complete (VERTEX_SHADER_BIT, after draws)
+ *   3 fragment shader complete (FRAGMENT_SHADER_BIT)
+ *   4 render pass end (COLOR_ATTACHMENT_OUTPUT)
+ *   5 transfer complete (TRANSFER_BIT, after render pass)
+ *   6 cmd end (BOTTOM_OF_PIPE)
  */
 enum {
     PB_RHI_TS_CMD_START = 0,
@@ -62,6 +74,13 @@ enum {
     PB_RHI_TS_RENDER_PASS_END = 2,
     PB_RHI_TS_CMD_END = 3,
     PB_RHI_TS_QUERY_COUNT = 4,
+
+    PB_RHI_TS_DETAILED_VERTEX = 2,
+    PB_RHI_TS_DETAILED_FRAGMENT = 3,
+    PB_RHI_TS_DETAILED_RENDER_PASS_END = 4,
+    PB_RHI_TS_DETAILED_TRANSFER = 5,
+    PB_RHI_TS_DETAILED_CMD_END = 6,
+    PB_RHI_TS_QUERY_COUNT_DETAILED = 7,
 };
 
 bool pb_rhi_query_pool_read_timestamps(

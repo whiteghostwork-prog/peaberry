@@ -28,6 +28,7 @@ struct pb_bench_target {
     VkCommandPool command_pool;
     VkCommandBuffer command_buffer;
     VkFence fence;
+    bool detailed;
 };
 
 static bool choose_depth_format(VkPhysicalDevice physical_device, VkFormat *out_format)
@@ -223,7 +224,8 @@ bool pb_bench_target_create(
     pb_bench_target **out_target,
     pb_context *context,
     VkExtent2D extent,
-    pb_bench_scenario *scenario)
+    pb_bench_scenario *scenario,
+    bool detailed)
 {
     if (!out_target || !context || !scenario || extent.width == 0 || extent.height == 0) {
         return false;
@@ -237,8 +239,9 @@ bool pb_bench_target_create(
     target->context = context;
     target->scenario = scenario;
     target->extent = extent;
+    target->detailed = detailed;
 
-    if (!pb_rhi_query_pool_create(context, &target->query_pool) ||
+    if (!pb_rhi_query_pool_create(context, detailed, &target->query_pool) ||
         !create_depth_image(target) ||
         !pb_rhi_texture_create_2d(
             context,
@@ -355,18 +358,47 @@ bool pb_bench_target_run_frame(pb_bench_target *target, pb_bench_frame *out_fram
         target->scenario->record(cmd, target->extent, target->scenario->user_data);
     }
 
-    pb_rhi_query_pool_write_timestamp(
-        cmd,
-        target->query_pool,
-        PB_RHI_TS_RENDER_PASS_END,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-    vkCmdEndRenderPass(cmd);
+    if (target->detailed) {
+        pb_rhi_query_pool_write_timestamp(
+            cmd,
+            target->query_pool,
+            PB_RHI_TS_DETAILED_VERTEX,
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+        pb_rhi_query_pool_write_timestamp(
+            cmd,
+            target->query_pool,
+            PB_RHI_TS_DETAILED_FRAGMENT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        pb_rhi_query_pool_write_timestamp(
+            cmd,
+            target->query_pool,
+            PB_RHI_TS_DETAILED_RENDER_PASS_END,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        vkCmdEndRenderPass(cmd);
+        pb_rhi_query_pool_write_timestamp(
+            cmd,
+            target->query_pool,
+            PB_RHI_TS_DETAILED_TRANSFER,
+            VK_PIPELINE_STAGE_TRANSFER_BIT);
+        pb_rhi_query_pool_write_timestamp(
+            cmd,
+            target->query_pool,
+            PB_RHI_TS_DETAILED_CMD_END,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    } else {
+        pb_rhi_query_pool_write_timestamp(
+            cmd,
+            target->query_pool,
+            PB_RHI_TS_RENDER_PASS_END,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        vkCmdEndRenderPass(cmd);
 
-    pb_rhi_query_pool_write_timestamp(
-        cmd,
-        target->query_pool,
-        PB_RHI_TS_CMD_END,
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        pb_rhi_query_pool_write_timestamp(
+            cmd,
+            target->query_pool,
+            PB_RHI_TS_CMD_END,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    }
 
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         return false;
@@ -390,17 +422,25 @@ bool pb_bench_target_run_frame(pb_bench_target *target, pb_bench_frame *out_fram
 
     out_frame->cpu_submit_to_idle_ns = pb_bench_now_ns() - cpu_start;
 
-    uint64_t ticks[PB_RHI_TS_QUERY_COUNT] = {0};
-    if (!pb_rhi_query_pool_read_timestamps(target->context, target->query_pool, ticks, PB_RHI_TS_QUERY_COUNT)) {
+    const uint32_t query_count = pb_rhi_query_pool_query_count(target->query_pool);
+    uint64_t *ticks = calloc(query_count, sizeof(*ticks));
+    if (!ticks) {
         return false;
     }
 
-    return pb_rhi_query_pool_fill_frame(
+    if (!pb_rhi_query_pool_read_timestamps(target->context, target->query_pool, ticks, query_count)) {
+        free(ticks);
+        return false;
+    }
+
+    const bool ok = pb_rhi_query_pool_fill_frame(
         target->context,
         target->query_pool,
         ticks,
-        PB_RHI_TS_QUERY_COUNT,
+        query_count,
         out_frame);
+    free(ticks);
+    return ok;
 }
 
 VkRenderPass pb_bench_target_render_pass(const pb_bench_target *target)

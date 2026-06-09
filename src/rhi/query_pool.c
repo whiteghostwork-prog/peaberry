@@ -60,7 +60,7 @@ static uint64_t ticks_to_ns(const pb_rhi_query_pool *pool, uint64_t start, uint6
     return (uint64_t)delta;
 }
 
-bool pb_rhi_query_pool_create(pb_context *context, pb_rhi_query_pool **out_pool)
+bool pb_rhi_query_pool_create(pb_context *context, bool detailed, pb_rhi_query_pool **out_pool)
 {
     if (!context || !out_pool || !pb_context_device_ready(context)) {
         return false;
@@ -70,6 +70,9 @@ bool pb_rhi_query_pool_create(pb_context *context, pb_rhi_query_pool **out_pool)
     if (!pool) {
         return false;
     }
+
+    pool->detailed = detailed;
+    pool->query_count = detailed ? PB_RHI_TS_QUERY_COUNT_DETAILED : PB_RHI_TS_QUERY_COUNT;
 
     VkPhysicalDevice physical_device = pb_context_physical_device(context);
     VkPhysicalDeviceProperties props;
@@ -87,7 +90,7 @@ bool pb_rhi_query_pool_create(pb_context *context, pb_rhi_query_pool **out_pool)
     VkQueryPoolCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
         .queryType = VK_QUERY_TYPE_TIMESTAMP,
-        .queryCount = PB_RHI_TS_QUERY_COUNT,
+        .queryCount = pool->query_count,
     };
 
     VkDevice device = pb_context_device(context);
@@ -99,6 +102,16 @@ bool pb_rhi_query_pool_create(pb_context *context, pb_rhi_query_pool **out_pool)
 
     *out_pool = pool;
     return true;
+}
+
+uint32_t pb_rhi_query_pool_query_count(const pb_rhi_query_pool *pool)
+{
+    return pool ? pool->query_count : 0;
+}
+
+bool pb_rhi_query_pool_is_detailed(const pb_rhi_query_pool *pool)
+{
+    return pool && pool->detailed;
 }
 
 void pb_rhi_query_pool_destroy(pb_context *context, pb_rhi_query_pool *pool)
@@ -120,7 +133,7 @@ void pb_rhi_query_pool_cmd_reset(VkCommandBuffer cmd, const pb_rhi_query_pool *p
         return;
     }
 
-    vkCmdResetQueryPool(cmd, pool->handle, 0, PB_RHI_TS_QUERY_COUNT);
+    vkCmdResetQueryPool(cmd, pool->handle, 0, pool->query_count);
 }
 
 void pb_rhi_query_pool_write_timestamp(
@@ -133,7 +146,7 @@ void pb_rhi_query_pool_write_timestamp(
         return;
     }
 
-    if (query_index >= PB_RHI_TS_QUERY_COUNT) {
+    if (query_index >= pool->query_count) {
         return;
     }
 
@@ -155,8 +168,8 @@ bool pb_rhi_query_pool_read_timestamps(
         return true;
     }
 
-    if (count > PB_RHI_TS_QUERY_COUNT) {
-        count = PB_RHI_TS_QUERY_COUNT;
+    if (count > pool->query_count) {
+        count = pool->query_count;
     }
 
     VkDevice device = pb_context_device(context);
@@ -186,13 +199,35 @@ bool pb_rhi_query_pool_fill_frame(
 
     pb_bench_frame_zero(out);
 
-    if (!pool || !ticks || tick_count < PB_RHI_TS_QUERY_COUNT) {
+    const uint32_t required = pool ? pool->query_count : PB_RHI_TS_QUERY_COUNT;
+    if (!pool || !ticks || tick_count < required) {
         return false;
     }
 
-    out->gpu_total_ns = ticks_to_ns(pool, ticks[PB_RHI_TS_CMD_START], ticks[PB_RHI_TS_CMD_END]);
-    out->gpu_render_pass_ns =
-        ticks_to_ns(pool, ticks[PB_RHI_TS_RENDER_PASS_START], ticks[PB_RHI_TS_RENDER_PASS_END]);
+    if (pool->detailed) {
+        out->gpu_total_ns =
+            ticks_to_ns(pool, ticks[PB_RHI_TS_CMD_START], ticks[PB_RHI_TS_DETAILED_CMD_END]);
+        out->gpu_render_pass_ns = ticks_to_ns(
+            pool,
+            ticks[PB_RHI_TS_RENDER_PASS_START],
+            ticks[PB_RHI_TS_DETAILED_RENDER_PASS_END]);
+        out->gpu_vertex_ns = ticks_to_ns(
+            pool,
+            ticks[PB_RHI_TS_RENDER_PASS_START],
+            ticks[PB_RHI_TS_DETAILED_VERTEX]);
+        out->gpu_fragment_ns = ticks_to_ns(
+            pool,
+            ticks[PB_RHI_TS_DETAILED_VERTEX],
+            ticks[PB_RHI_TS_DETAILED_FRAGMENT]);
+        out->gpu_transfer_ns = ticks_to_ns(
+            pool,
+            ticks[PB_RHI_TS_DETAILED_TRANSFER],
+            ticks[PB_RHI_TS_DETAILED_CMD_END]);
+    } else {
+        out->gpu_total_ns = ticks_to_ns(pool, ticks[PB_RHI_TS_CMD_START], ticks[PB_RHI_TS_CMD_END]);
+        out->gpu_render_pass_ns =
+            ticks_to_ns(pool, ticks[PB_RHI_TS_RENDER_PASS_START], ticks[PB_RHI_TS_RENDER_PASS_END]);
+    }
 
     (void)context;
     return true;
