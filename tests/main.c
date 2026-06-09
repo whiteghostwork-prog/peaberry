@@ -12,6 +12,7 @@ void pb_run_math_tests(void);
 void pb_run_vulkan_tests(void);
 void pb_run_gltf_tests(void);
 void pb_run_gltf_render_tests(void);
+void pb_run_bench_tests(void);
 
 int main(void)
 {
@@ -21,6 +22,7 @@ int main(void)
     pb_run_vulkan_tests();
     pb_run_gltf_tests();
     pb_run_gltf_render_tests();
+    pb_run_bench_tests();
 
     pb_test_report("total");
 

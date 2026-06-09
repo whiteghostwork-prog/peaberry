@@ -12,6 +12,7 @@ add_library(peaberry STATIC
     rhi/cubemap.c
     rhi/mesh.c
     rhi/offscreen.c
+    rhi/query_pool.c
     rhi/quad.c
     rhi/shader.c
     rhi/texture.c
@@ -37,6 +38,7 @@ target_include_directories(peaberry
 target_compile_definitions(peaberry
     PRIVATE
         $<$<BOOL:${PEABERRY_ENABLE_VALIDATION}>:PEABERRY_ENABLE_VALIDATION=1>
+        _POSIX_C_SOURCE=200809L
 )
 
 target_link_libraries(peaberry

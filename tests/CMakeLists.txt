@@ -8,6 +8,7 @@ add_executable(peaberry_tests
     test_vulkan.c
     test_gltf.c
     test_gltf_render.c
+    test_bench.c
 )
 
 target_include_directories(peaberry_tests
