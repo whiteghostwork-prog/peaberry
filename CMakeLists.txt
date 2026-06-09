@@ -12,6 +12,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(PEABERRY_BUILD_EXAMPLES "Build peaberry examples" ON)
 option(PEABERRY_BUILD_TESTS "Build and register peaberry tests" ON)
+option(PEABERRY_BUILD_BENCHMARKS "Build peaberry_bench GPU benchmark runner" ON)
 option(PEABERRY_ENABLE_VALIDATION "Enable Vulkan validation layers" ON)
 
 find_package(Vulkan REQUIRED)
@@ -79,4 +80,8 @@ endif()
 
 if(PEABERRY_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(PEABERRY_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
 endif()

@@ -46,6 +46,9 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+      - name: Benchmark smoke
+        run: ./build/benchmarks/peaberry_bench clear --frames 10 --warmup 2
+
       - name: Verify SPIR-V shaders
         run: |
           test -f build/shaders/pbr_forward.vert.spv
