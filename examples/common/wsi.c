@@ -16,10 +16,13 @@
 
 #include "wsi.h"
 
+#include "peaberry/peaberry_bench.h"
+#include "peaberry/peaberry_frame_metrics.h"
 #include "peaberry/peaberry_vk.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -52,6 +55,15 @@ struct pb_example_wsi {
     VkImage depth_image;
     VkDeviceMemory depth_memory;
     VkImageView depth_view;
+    bool stats_enabled;
+    bool stats_have_gpu_sample;
+    pb_rhi_query_pool *stats_query_pool;
+    uint64_t stats_wall_start_ns;
+    uint64_t stats_submit_time_ns[PB_MAX_FRAMES_IN_FLIGHT];
+    pb_bench_frame stats_bench_frame;
+    pb_frame_metrics stats_last_metrics;
+    pb_frame_metrics_accumulator stats_accumulator;
+    char base_title[128];
 };
 
 static void framebuffer_size_callback(GLFWwindow *window, int width, int height)
@@ -612,6 +624,11 @@ static void shutdown_swapchain(pb_example_wsi *wsi)
         vkDestroyRenderPass(device, wsi->render_pass, NULL);
         wsi->render_pass = VK_NULL_HANDLE;
     }
+
+    if (wsi->stats_query_pool) {
+        pb_rhi_query_pool_destroy(wsi->context, wsi->stats_query_pool);
+        wsi->stats_query_pool = NULL;
+    }
 }
 
 pb_example_wsi *pb_example_wsi_create(const pb_example_wsi_desc *desc)
@@ -681,6 +698,14 @@ pb_example_wsi *pb_example_wsi_create(const pb_example_wsi_desc *desc)
         glfwTerminate();
         free(wsi);
         return NULL;
+    }
+
+    if (desc->title) {
+        snprintf(wsi->base_title, sizeof(wsi->base_title), "%s", desc->title);
+    }
+
+    if (desc->enable_stats) {
+        pb_example_wsi_set_stats_enabled(wsi, true);
     }
 
     return wsi;
@@ -753,12 +778,42 @@ bool pb_example_wsi_begin_frame(pb_example_wsi *wsi, float r, float g, float b, 
     wsi->clear_color[2] = b;
     wsi->clear_color[3] = a;
 
+    if (wsi->stats_enabled) {
+        wsi->stats_wall_start_ns = pb_bench_now_ns();
+    }
+
     vkWaitForFences(
         pb_context_device(wsi->context),
         1,
         &wsi->in_flight[wsi->frame_index],
         VK_TRUE,
         UINT64_MAX);
+
+    if (wsi->stats_enabled && wsi->stats_query_pool) {
+        if (wsi->stats_have_gpu_sample) {
+            uint64_t ticks[PB_RHI_TS_QUERY_COUNT] = {0};
+            if (pb_rhi_query_pool_read_timestamps(
+                    wsi->context,
+                    wsi->stats_query_pool,
+                    ticks,
+                    PB_RHI_TS_QUERY_COUNT)) {
+                pb_rhi_query_pool_fill_frame(
+                    wsi->context,
+                    wsi->stats_query_pool,
+                    ticks,
+                    PB_RHI_TS_QUERY_COUNT,
+                    &wsi->stats_bench_frame);
+            }
+
+            const uint64_t submit_time = wsi->stats_submit_time_ns[wsi->frame_index];
+            if (submit_time > 0) {
+                const uint64_t now = pb_bench_now_ns();
+                if (now > submit_time) {
+                    wsi->stats_bench_frame.cpu_submit_to_idle_ns = now - submit_time;
+                }
+            }
+        }
+    }
 
     VkResult acquire_result = vkAcquireNextImageKHR(
         pb_context_device(wsi->context),
@@ -788,6 +843,15 @@ bool pb_example_wsi_begin_frame(pb_example_wsi *wsi, float r, float g, float b, 
         return false;
     }
 
+    if (wsi->stats_enabled && wsi->stats_query_pool) {
+        pb_rhi_query_pool_cmd_reset(cmd, wsi->stats_query_pool);
+        pb_rhi_query_pool_write_timestamp(
+            cmd,
+            wsi->stats_query_pool,
+            PB_RHI_TS_CMD_START,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+    }
+
     VkClearValue clears[2] = {
         { .color = { { wsi->clear_color[0], wsi->clear_color[1], wsi->clear_color[2], wsi->clear_color[3] } } },
         { .depthStencil = { 1.0f, 0 } },
@@ -802,6 +866,15 @@ bool pb_example_wsi_begin_frame(pb_example_wsi *wsi, float r, float g, float b, 
     };
 
     vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+
+    if (wsi->stats_enabled && wsi->stats_query_pool) {
+        pb_rhi_query_pool_write_timestamp(
+            cmd,
+            wsi->stats_query_pool,
+            PB_RHI_TS_RENDER_PASS_START,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    }
+
     return true;
 }
 
@@ -834,11 +907,31 @@ bool pb_example_wsi_end_frame(pb_example_wsi *wsi)
     }
 
     VkCommandBuffer cmd = wsi->command_buffers[wsi->frame_index];
+
+    if (wsi->stats_enabled && wsi->stats_query_pool) {
+        pb_rhi_query_pool_write_timestamp(
+            cmd,
+            wsi->stats_query_pool,
+            PB_RHI_TS_RENDER_PASS_END,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    }
+
     vkCmdEndRenderPass(cmd);
+
+    if (wsi->stats_enabled && wsi->stats_query_pool) {
+        pb_rhi_query_pool_write_timestamp(
+            cmd,
+            wsi->stats_query_pool,
+            PB_RHI_TS_CMD_END,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    }
 
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         return false;
     }
+
+    const uint64_t submit_start_ns =
+        wsi->stats_enabled ? pb_bench_now_ns() : 0;
 
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submit_info = {
@@ -857,6 +950,13 @@ bool pb_example_wsi_end_frame(pb_example_wsi *wsi)
         return false;
     }
 
+    if (wsi->stats_enabled) {
+        wsi->stats_submit_time_ns[wsi->frame_index] = submit_start_ns;
+        wsi->stats_have_gpu_sample = true;
+    }
+
+    const uint64_t present_start_ns = wsi->stats_enabled ? pb_bench_now_ns() : 0;
+
     VkPresentInfoKHR present_info = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
@@ -873,6 +973,84 @@ bool pb_example_wsi_end_frame(pb_example_wsi *wsi)
         return false;
     }
 
+    if (wsi->stats_enabled) {
+        const uint64_t present_end_ns = pb_bench_now_ns();
+        const uint64_t wall_frame_ns =
+            wsi->stats_wall_start_ns > 0 && present_end_ns > wsi->stats_wall_start_ns
+            ? present_end_ns - wsi->stats_wall_start_ns
+            : 0;
+        const uint64_t cpu_present_ns =
+            present_start_ns > 0 && present_end_ns > present_start_ns ? present_end_ns - present_start_ns : 0;
+
+        pb_frame_metrics_from_bench_frame(
+            &wsi->stats_bench_frame,
+            wall_frame_ns,
+            cpu_present_ns,
+            PB_FRAME_BUDGET_60HZ_NS,
+            &wsi->stats_last_metrics);
+
+        const double now_s = glfwGetTime();
+        pb_frame_metrics_accumulator_push(&wsi->stats_accumulator, now_s, wall_frame_ns);
+        if (wsi->stats_accumulator.wall_fps > 0.0) {
+            wsi->stats_last_metrics.wall_fps = wsi->stats_accumulator.wall_fps;
+        }
+    }
+
     wsi->frame_index = (wsi->frame_index + 1) % PB_MAX_FRAMES_IN_FLIGHT;
+    return true;
+}
+
+void pb_example_wsi_set_stats_enabled(pb_example_wsi *wsi, bool enabled)
+{
+    if (!wsi) {
+        return;
+    }
+
+    wsi->stats_enabled = enabled;
+    if (!enabled) {
+        return;
+    }
+
+    if (!wsi->stats_query_pool && pb_context_device_ready(wsi->context)) {
+        if (!pb_rhi_query_pool_create(wsi->context, false, &wsi->stats_query_pool)) {
+            wsi->stats_enabled = false;
+            return;
+        }
+    }
+
+    pb_frame_metrics_accumulator_init(&wsi->stats_accumulator, 1.0);
+    pb_bench_frame_zero(&wsi->stats_bench_frame);
+    pb_frame_metrics_zero(&wsi->stats_last_metrics);
+}
+
+bool pb_example_wsi_stats_enabled(const pb_example_wsi *wsi)
+{
+    return wsi && wsi->stats_enabled;
+}
+
+bool pb_example_wsi_last_metrics(const pb_example_wsi *wsi, pb_frame_metrics *out)
+{
+    if (!wsi || !out || !wsi->stats_enabled) {
+        return false;
+    }
+
+    *out = wsi->stats_last_metrics;
+    return true;
+}
+
+bool pb_example_wsi_update_stats_title(pb_example_wsi *wsi)
+{
+    if (!wsi || !wsi->stats_enabled || !wsi->window) {
+        return false;
+    }
+
+    char overlay[160];
+    if (pb_frame_metrics_format_overlay(&wsi->stats_last_metrics, overlay, sizeof(overlay)) <= 0) {
+        return false;
+    }
+
+    char title[320];
+    snprintf(title, sizeof(title), "%s | %s", wsi->base_title, overlay);
+    glfwSetWindowTitle(wsi->window, title);
     return true;
 }

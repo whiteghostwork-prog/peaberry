@@ -2,8 +2,7 @@
  * Copyright 2026 The Peaberry Authors
  * SPDX-License-Identifier: Apache-2.0
  *
- * GPU/CPU frame timing for benchmarks. Present-path slots are reserved for
- * Phase 8 (vevio) and remain zero until filled.
+ * GPU/CPU frame timing for benchmarks. Unused struct slots remain zero.
  */
 
 #ifndef PEABERRY_BENCH_H

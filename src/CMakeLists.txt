@@ -13,6 +13,7 @@ add_library(peaberry STATIC
     rhi/mesh.c
     rhi/offscreen.c
     rhi/query_pool.c
+    rhi/frame_metrics.c
     rhi/quad.c
     rhi/shader.c
     rhi/texture.c

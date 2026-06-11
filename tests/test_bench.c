@@ -5,6 +5,7 @@
 
 #include "peaberry/peaberry.h"
 #include "peaberry/peaberry_bench.h"
+#include "peaberry/peaberry_frame_metrics.h"
 #include "peaberry/peaberry_vk.h"
 #include "rhi/cmd_submit.h"
 #include "test.h"
@@ -141,10 +142,61 @@ PB_TEST(test_bench_query_pool_detailed)
     PB_TEST_PASS();
 }
 
+PB_TEST(test_frame_metrics_fps_from_ns)
+{
+    PB_ASSERT(pb_frame_metrics_fps_from_ns(0) == 0.0);
+    PB_ASSERT(pb_frame_metrics_fps_from_ns(1000000000u) == 1.0);
+    PB_ASSERT(pb_frame_metrics_fps_from_ns(PB_FRAME_BUDGET_60HZ_NS) > 59.9);
+    PB_ASSERT(pb_frame_metrics_fps_from_ns(PB_FRAME_BUDGET_60HZ_NS) < 60.1);
+    PB_TEST_PASS();
+}
+
+PB_TEST(test_frame_metrics_from_bench_frame)
+{
+    pb_bench_frame bench = {
+        .gpu_total_ns = PB_FRAME_BUDGET_60HZ_NS,
+        .gpu_render_pass_ns = 8000000u,
+        .cpu_submit_to_idle_ns = 2000000u,
+    };
+
+    pb_frame_metrics metrics;
+    pb_frame_metrics_from_bench_frame(
+        &bench,
+        PB_FRAME_BUDGET_60HZ_NS,
+        500000u,
+        PB_FRAME_BUDGET_60HZ_NS,
+        &metrics);
+
+    PB_ASSERT(metrics.wall_fps > 59.9 && metrics.wall_fps < 60.1);
+    PB_ASSERT(metrics.gpu_fps > 59.9 && metrics.gpu_fps < 60.1);
+    PB_ASSERT(metrics.gpu_load_percent > 99.0 && metrics.gpu_load_percent <= 100.0);
+    PB_ASSERT(metrics.cpu_present_ns == 500000u);
+
+    char overlay[128];
+    PB_ASSERT(pb_frame_metrics_format_overlay(&metrics, overlay, sizeof(overlay)) > 0);
+    PB_ASSERT(strstr(overlay, "FPS") != NULL);
+    PB_TEST_PASS();
+}
+
+PB_TEST(test_frame_metrics_accumulator)
+{
+    pb_frame_metrics_accumulator acc;
+    pb_frame_metrics_accumulator_init(&acc, 1.0);
+    pb_frame_metrics_accumulator_reset(&acc, 0.0);
+
+    PB_ASSERT(!pb_frame_metrics_accumulator_push(&acc, 0.0, PB_FRAME_BUDGET_60HZ_NS));
+    PB_ASSERT(pb_frame_metrics_accumulator_push(&acc, 1.0, PB_FRAME_BUDGET_60HZ_NS));
+    PB_ASSERT(acc.wall_fps > 1.5 && acc.wall_fps < 2.5);
+    PB_TEST_PASS();
+}
+
 void pb_run_bench_tests(void)
 {
     printf("bench tests\n");
     PB_RUN_TEST(test_bench_now_ns_monotonic);
     PB_RUN_TEST(test_bench_query_pool_smoke);
     PB_RUN_TEST(test_bench_query_pool_detailed);
+    PB_RUN_TEST(test_frame_metrics_fps_from_ns);
+    PB_RUN_TEST(test_frame_metrics_from_bench_frame);
+    PB_RUN_TEST(test_frame_metrics_accumulator);
 }

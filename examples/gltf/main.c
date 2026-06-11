@@ -31,8 +31,24 @@ static void resource_paths(void)
 
 int main(int argc, char **argv)
 {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <model.gltf|model.glb>\n", argv[0]);
+    bool show_stats = false;
+    const char *model_path = NULL;
+
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--stats") == 0) {
+            show_stats = true;
+        } else if (argv[i][0] != '-' && model_path == NULL) {
+            model_path = argv[i];
+        } else {
+            fprintf(stderr, "Usage: %s [--stats] <model.gltf|model.glb>\n", argv[0]);
+            fprintf(stderr, "  Example: %s assets/models/test_cube.gltf\n", argv[0]);
+            fprintf(stderr, "  Khronos sample: scripts/download_damaged_helmet.sh\n");
+            return 1;
+        }
+    }
+
+    if (!model_path) {
+        fprintf(stderr, "Usage: %s [--stats] <model.gltf|model.glb>\n", argv[0]);
         fprintf(stderr, "  Example: %s assets/models/test_cube.gltf\n", argv[0]);
         fprintf(stderr, "  Khronos sample: scripts/download_damaged_helmet.sh\n");
         return 1;
@@ -57,6 +73,7 @@ int main(int argc, char **argv)
         .width = 1280,
         .height = 720,
         .title = "peaberry gltf",
+        .enable_stats = show_stats,
     };
 
     pb_example_wsi *wsi = pb_example_wsi_create(&wsi_desc);
@@ -69,10 +86,10 @@ int main(int argc, char **argv)
     pb_gltf_scene *scene = pb_gltf_scene_create(
         &(pb_gltf_scene_desc){
             .context = ctx,
-            .path = argv[1],
+            .path = model_path,
         });
     if (!scene) {
-        fprintf(stderr, "Failed to load glTF: %s\n", argv[1]);
+        fprintf(stderr, "Failed to load glTF: %s\n", model_path);
         pb_example_wsi_destroy(wsi);
         pb_context_destroy(ctx);
         return 1;
@@ -164,6 +181,10 @@ int main(int argc, char **argv)
             pb_pbr_forward_pass_record(pass, cmd, extent, scene, 0.0f);
 
             pb_example_wsi_end_frame(wsi);
+
+            if (show_stats) {
+                pb_example_wsi_update_stats_title(wsi);
+            }
         }
     }
 
