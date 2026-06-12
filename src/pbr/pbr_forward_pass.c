@@ -6,6 +6,7 @@
 #include "peaberry/peaberry_gltf.h"
 
 #include "peaberry/peaberry_math.h"
+#include "pbr/draw_sort.h"
 #include "pbr/gltf_scene_internal.h"
 #include "pbr/ibl.h"
 #include "rhi/buffer.h"
@@ -28,7 +29,8 @@ typedef struct pb_frame_ubo {
 
 struct pb_pbr_forward_pass {
     pb_context *context;
-    VkPipeline pipeline;
+    VkPipeline pipeline_opaque;
+    VkPipeline pipeline_blend;
     VkPipelineLayout pipeline_layout;
     VkDescriptorSetLayout descriptor_set_layout;
     VkDescriptorPool descriptor_pool;
@@ -452,24 +454,6 @@ static bool create_pipeline(struct pb_pbr_forward_pass *pass, const pb_pbr_forwa
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
 
-    VkPipelineDepthStencilStateCreateInfo depth_stencil = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = VK_TRUE,
-        .depthWriteEnable = VK_TRUE,
-        .depthCompareOp = VK_COMPARE_OP_LESS,
-    };
-
-    VkPipelineColorBlendAttachmentState color_blend_attachment = {
-        .colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-    };
-
-    VkPipelineColorBlendStateCreateInfo color_blend = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &color_blend_attachment,
-    };
-
     VkPushConstantRange push_range = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
         .offset = 0,
@@ -488,27 +472,68 @@ static bool create_pipeline(struct pb_pbr_forward_pass *pass, const pb_pbr_forwa
         return false;
     }
 
-    VkGraphicsPipelineCreateInfo pipeline_info = {
-        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .stageCount = 2,
-        .pStages = stages,
-        .pVertexInputState = &vertex_input,
-        .pInputAssemblyState = &input_assembly,
-        .pViewportState = &viewport_state,
-        .pRasterizationState = &rasterization,
-        .pMultisampleState = &multisample,
-        .pDepthStencilState = &depth_stencil,
-        .pColorBlendState = &color_blend,
-        .pDynamicState = &dynamic_state,
-        .layout = pass->pipeline_layout,
-        .renderPass = desc->render_pass,
-        .subpass = 0,
+    const struct {
+        bool depth_write;
+        bool alpha_blend;
+        VkPipeline *pipeline;
+    } variants[] = {
+        { true, false, &pass->pipeline_opaque },
+        { false, true, &pass->pipeline_blend },
     };
 
-    return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &pass->pipeline) == VK_SUCCESS;
+    for (size_t i = 0; i < sizeof(variants) / sizeof(variants[0]); ++i) {
+        VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .depthTestEnable = VK_TRUE,
+            .depthWriteEnable = variants[i].depth_write ? VK_TRUE : VK_FALSE,
+            .depthCompareOp = VK_COMPARE_OP_LESS,
+        };
+
+        VkPipelineColorBlendAttachmentState color_blend_attachment = {
+            .colorWriteMask =
+                VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+            .blendEnable = variants[i].alpha_blend ? VK_TRUE : VK_FALSE,
+            .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+            .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .colorBlendOp = VK_BLEND_OP_ADD,
+            .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+            .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .alphaBlendOp = VK_BLEND_OP_ADD,
+        };
+
+        VkPipelineColorBlendStateCreateInfo color_blend = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &color_blend_attachment,
+        };
+
+        VkGraphicsPipelineCreateInfo pipeline_info = {
+            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .stageCount = 2,
+            .pStages = stages,
+            .pVertexInputState = &vertex_input,
+            .pInputAssemblyState = &input_assembly,
+            .pViewportState = &viewport_state,
+            .pRasterizationState = &rasterization,
+            .pMultisampleState = &multisample,
+            .pDepthStencilState = &depth_stencil,
+            .pColorBlendState = &color_blend,
+            .pDynamicState = &dynamic_state,
+            .layout = pass->pipeline_layout,
+            .renderPass = desc->render_pass,
+            .subpass = 0,
+        };
+
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, variants[i].pipeline) !=
+            VK_SUCCESS) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
-static void update_frame_uniforms(struct pb_pbr_forward_pass *pass, VkExtent2D extent)
+static pb_frame_ubo build_frame_ubo(struct pb_pbr_forward_pass *pass, VkExtent2D extent)
 {
     pb_frame_ubo frame = {0};
 
@@ -533,8 +558,69 @@ static void update_frame_uniforms(struct pb_pbr_forward_pass *pass, VkExtent2D e
     }
 
     frame.exposure = pass->exposure;
+    return frame;
+}
 
+static void update_frame_uniforms(struct pb_pbr_forward_pass *pass, VkExtent2D extent)
+{
+    const pb_frame_ubo frame = build_frame_ubo(pass, extent);
     pb_rhi_buffer_upload(pass->context, &pass->frame_buffer, &frame, sizeof(frame));
+}
+
+static void record_sorted_draws(
+    struct pb_pbr_forward_pass *pass,
+    VkCommandBuffer cmd,
+    const pb_gltf_scene *scene,
+    const pb_draw_sort_entry *entries,
+    uint32_t count,
+    VkPipeline pipeline,
+    float time_seconds)
+{
+    if (count == 0) {
+        return;
+    }
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    for (uint32_t i = 0; i < count; ++i) {
+        const pb_gltf_draw *draw = &scene->draws[entries[i].draw_index];
+        if (draw->material_index >= pass->descriptor_set_count || draw->mesh.index_count == 0) {
+            continue;
+        }
+
+        VkBuffer vertex_buffer = pb_rhi_buffer_handle(&draw->mesh.vertices);
+        VkBuffer index_buffer = pb_rhi_buffer_handle(&draw->mesh.indices);
+        if (vertex_buffer == VK_NULL_HANDLE || index_buffer == VK_NULL_HANDLE) {
+            continue;
+        }
+
+        vkCmdBindDescriptorSets(
+            cmd,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pass->pipeline_layout,
+            0,
+            1,
+            &pass->descriptor_sets[draw->material_index],
+            0,
+            NULL);
+
+        pb_mat4 model;
+        memcpy(model, draw->world, sizeof(model));
+        pb_mat4_rotate_y(model, time_seconds * 0.4f, model);
+
+        vkCmdPushConstants(
+            cmd,
+            pass->pipeline_layout,
+            VK_SHADER_STAGE_VERTEX_BIT,
+            0,
+            sizeof(model),
+            model);
+
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);
+        vkCmdBindIndexBuffer(cmd, index_buffer, 0, draw->mesh.index_type);
+        vkCmdDrawIndexed(cmd, draw->mesh.index_count, 1, 0, 0, 0);
+    }
 }
 
 pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *desc)
@@ -603,8 +689,11 @@ void pb_pbr_forward_pass_destroy(pb_pbr_forward_pass *pass)
         destroy_scene_bindings(pass);
 
         VkDevice device = pb_context_device(pass->context);
-        if (pass->pipeline) {
-            vkDestroyPipeline(device, pass->pipeline, NULL);
+        if (pass->pipeline_opaque) {
+            vkDestroyPipeline(device, pass->pipeline_opaque, NULL);
+        }
+        if (pass->pipeline_blend) {
+            vkDestroyPipeline(device, pass->pipeline_blend, NULL);
         }
         if (pass->pipeline_layout) {
             vkDestroyPipelineLayout(device, pass->pipeline_layout, NULL);
@@ -672,6 +761,50 @@ void pb_pbr_forward_pass_record(
             sizeof(scene->materials[i].material_data));
     }
 
+    const pb_frame_ubo frame = build_frame_ubo(pass, extent);
+    const uint32_t draw_count = scene->draw_count;
+    pb_draw_sort_entry *opaque_entries = NULL;
+    pb_draw_sort_entry *blend_entries = NULL;
+    uint32_t opaque_count = 0;
+    uint32_t blend_count = 0;
+
+    if (draw_count > 0) {
+        opaque_entries = calloc(draw_count, sizeof(*opaque_entries));
+        blend_entries = calloc(draw_count, sizeof(*blend_entries));
+        if (!opaque_entries || !blend_entries) {
+            free(opaque_entries);
+            free(blend_entries);
+            return;
+        }
+
+        for (uint32_t d = 0; d < draw_count; ++d) {
+            const pb_gltf_draw *draw = &scene->draws[d];
+            if (draw->material_index >= scene->material_count || draw->mesh.index_count == 0) {
+                continue;
+            }
+
+            pb_mat4 model;
+            memcpy(model, draw->world, sizeof(model));
+            pb_mat4_rotate_y(model, time_seconds * 0.4f, model);
+
+            const float view_depth = pb_draw_sort_view_depth(frame.view, model);
+            const pb_gltf_material *material = &scene->materials[draw->material_index];
+            pb_draw_sort_entry entry = {
+                .draw_index = d,
+                .view_depth = view_depth,
+            };
+
+            if (material->alpha_mode == PB_GLTF_ALPHA_BLEND) {
+                blend_entries[blend_count++] = entry;
+            } else {
+                opaque_entries[opaque_count++] = entry;
+            }
+        }
+
+        pb_draw_sort_stable(opaque_entries, opaque_count, false);
+        pb_draw_sort_stable(blend_entries, blend_count, true);
+    }
+
     VkViewport viewport = {
         .width = (float)extent.width,
         .height = (float)extent.height,
@@ -682,45 +815,12 @@ void pb_pbr_forward_pass_record(
 
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass->pipeline);
 
-    for (uint32_t d = 0; d < scene->draw_count; ++d) {
-        const pb_gltf_draw *draw = &scene->draws[d];
-        if (draw->material_index >= pass->descriptor_set_count || draw->mesh.index_count == 0) {
-            continue;
-        }
+    record_sorted_draws(
+        pass, cmd, scene, opaque_entries, opaque_count, pass->pipeline_opaque, time_seconds);
+    record_sorted_draws(
+        pass, cmd, scene, blend_entries, blend_count, pass->pipeline_blend, time_seconds);
 
-        VkBuffer vertex_buffer = pb_rhi_buffer_handle(&draw->mesh.vertices);
-        VkBuffer index_buffer = pb_rhi_buffer_handle(&draw->mesh.indices);
-        if (vertex_buffer == VK_NULL_HANDLE || index_buffer == VK_NULL_HANDLE) {
-            continue;
-        }
-
-        vkCmdBindDescriptorSets(
-            cmd,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pass->pipeline_layout,
-            0,
-            1,
-            &pass->descriptor_sets[draw->material_index],
-            0,
-            NULL);
-
-        pb_mat4 model;
-        memcpy(model, draw->world, sizeof(model));
-        pb_mat4_rotate_y(model, time_seconds * 0.4f, model);
-
-        vkCmdPushConstants(
-            cmd,
-            pass->pipeline_layout,
-            VK_SHADER_STAGE_VERTEX_BIT,
-            0,
-            sizeof(model),
-            model);
-
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);
-        vkCmdBindIndexBuffer(cmd, index_buffer, 0, draw->mesh.index_type);
-        vkCmdDrawIndexed(cmd, draw->mesh.index_count, 1, 0, 0, 0);
-    }
+    free(opaque_entries);
+    free(blend_entries);
 }

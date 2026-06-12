@@ -6,6 +6,7 @@
 #ifndef PEABERRY_GLTF_SCENE_INTERNAL_H
 #define PEABERRY_GLTF_SCENE_INTERNAL_H
 
+#include "peaberry/peaberry_gltf.h"
 #include "peaberry/peaberry_math.h"
 #include "rhi/buffer.h"
 #include "rhi/mesh.h"
@@ -23,10 +24,14 @@ typedef struct pb_material_ubo {
     float roughness_factor;
     float occlusion_strength;
     float emissive_factor[3];
+    float alpha_cutoff;
+    float base_color_alpha;
+    float alpha_mode;
     float _pad1;
 } pb_material_ubo;
 
 typedef struct pb_gltf_material {
+    pb_gltf_alpha_mode alpha_mode;
     pb_rhi_texture albedo;
     pb_rhi_texture metallic_roughness;
     pb_rhi_texture normal;

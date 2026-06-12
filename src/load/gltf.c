@@ -120,12 +120,33 @@ static bool load_material_textures(
     dst->material_data.emissive_factor[0] = 0.0f;
     dst->material_data.emissive_factor[1] = 0.0f;
     dst->material_data.emissive_factor[2] = 0.0f;
+    dst->material_data.alpha_cutoff = 0.5f;
+    dst->material_data.base_color_alpha = 1.0f;
+    dst->material_data.alpha_mode = (float)PB_GLTF_ALPHA_OPAQUE;
+    dst->alpha_mode = PB_GLTF_ALPHA_OPAQUE;
+
+    if (src) {
+        switch (src->alpha_mode) {
+        case cgltf_alpha_mode_mask:
+            dst->alpha_mode = PB_GLTF_ALPHA_MASK;
+            dst->material_data.alpha_mode = (float)PB_GLTF_ALPHA_MASK;
+            break;
+        case cgltf_alpha_mode_blend:
+            dst->alpha_mode = PB_GLTF_ALPHA_BLEND;
+            dst->material_data.alpha_mode = (float)PB_GLTF_ALPHA_BLEND;
+            break;
+        default:
+            break;
+        }
+        dst->material_data.alpha_cutoff = src->alpha_cutoff;
+    }
 
     if (src && src->has_pbr_metallic_roughness) {
         const cgltf_pbr_metallic_roughness *pbr = &src->pbr_metallic_roughness;
         dst->material_data.albedo_factor[0] = pbr->base_color_factor[0];
         dst->material_data.albedo_factor[1] = pbr->base_color_factor[1];
         dst->material_data.albedo_factor[2] = pbr->base_color_factor[2];
+        dst->material_data.base_color_alpha = pbr->base_color_factor[3];
         dst->material_data.metallic_factor = pbr->metallic_factor;
         dst->material_data.roughness_factor = pbr->roughness_factor;
 
@@ -405,6 +426,10 @@ static bool create_materials(pb_context *context, cgltf_data *data, const char *
         mat->material_data.albedo_factor[2] = 1.0f;
         mat->material_data.metallic_factor = 1.0f;
         mat->material_data.roughness_factor = 1.0f;
+        mat->material_data.alpha_cutoff = 0.5f;
+        mat->material_data.base_color_alpha = 1.0f;
+        mat->material_data.alpha_mode = (float)PB_GLTF_ALPHA_OPAQUE;
+        mat->alpha_mode = PB_GLTF_ALPHA_OPAQUE;
 
         if (!load_material_textures(context, src, gltf_dir, mat)) {
             return false;
@@ -592,5 +617,21 @@ bool pb_gltf_scene_material_factors(
     out->albedo_factor[2] = material->albedo_factor[2];
     out->metallic_factor = material->metallic_factor;
     out->roughness_factor = material->roughness_factor;
+    return true;
+}
+
+bool pb_gltf_scene_material_info(
+    const pb_gltf_scene *scene,
+    uint32_t material_index,
+    pb_gltf_material_info *out)
+{
+    if (!scene || !out || material_index >= scene->material_count) {
+        return false;
+    }
+
+    const pb_gltf_material *material = &scene->materials[material_index];
+    out->alpha_mode = material->alpha_mode;
+    out->alpha_cutoff = material->material_data.alpha_cutoff;
+    out->base_color_alpha = material->material_data.base_color_alpha;
     return true;
 }

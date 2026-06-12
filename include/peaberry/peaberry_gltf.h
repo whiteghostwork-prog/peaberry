@@ -40,10 +40,27 @@ typedef struct pb_gltf_material_factors {
     float roughness_factor;
 } pb_gltf_material_factors;
 
+typedef enum pb_gltf_alpha_mode {
+    PB_GLTF_ALPHA_OPAQUE = 0,
+    PB_GLTF_ALPHA_MASK = 1,
+    PB_GLTF_ALPHA_BLEND = 2,
+} pb_gltf_alpha_mode;
+
+typedef struct pb_gltf_material_info {
+    pb_gltf_alpha_mode alpha_mode;
+    float alpha_cutoff;
+    float base_color_alpha;
+} pb_gltf_material_info;
+
 bool pb_gltf_scene_material_factors(
     const pb_gltf_scene *scene,
     uint32_t material_index,
     pb_gltf_material_factors *out);
+
+bool pb_gltf_scene_material_info(
+    const pb_gltf_scene *scene,
+    uint32_t material_index,
+    pb_gltf_material_info *out);
 
 typedef struct pb_pbr_forward_pass pb_pbr_forward_pass;
 

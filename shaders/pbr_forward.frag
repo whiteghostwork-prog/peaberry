@@ -16,6 +16,9 @@ layout(set = 0, binding = 1) uniform MaterialLight {
     float roughness_factor;
     float occlusion_strength;
     vec3 emissive_factor;
+    float alpha_cutoff;
+    float base_color_alpha;
+    float alpha_mode;
     float _pad1;
 } material;
 
@@ -86,7 +89,9 @@ vec3 aces_tonemap(vec3 color)
 
 void main()
 {
-    vec3 albedo = texture(u_albedo, v_uv).rgb * material.albedo_factor;
+    vec4 albedo_sample = texture(u_albedo, v_uv);
+    vec3 albedo = albedo_sample.rgb * material.albedo_factor;
+    float alpha = albedo_sample.a * material.base_color_alpha;
     vec3 mr_sample = texture(u_metallic_roughness, v_uv).rgb;
     float roughness = mr_sample.g * material.roughness_factor;
     float metallic = mr_sample.b * material.metallic_factor;
@@ -143,5 +148,14 @@ void main()
     color = aces_tonemap(color * frame.exposure);
     color = pow(color, vec3(1.0 / 2.2));
 
-    out_color = vec4(color, 1.0);
+    if (material.alpha_mode > 0.5 && material.alpha_mode < 1.5) {
+        if (alpha < material.alpha_cutoff) {
+            discard;
+        }
+        alpha = 1.0;
+    } else if (material.alpha_mode < 0.5) {
+        alpha = 1.0;
+    }
+
+    out_color = vec4(color, alpha);
 }

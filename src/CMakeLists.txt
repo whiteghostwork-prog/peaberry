@@ -19,6 +19,7 @@ add_library(peaberry STATIC
     rhi/texture.c
     rhi/triangle.c
     pbr/ibl.c
+    pbr/draw_sort.c
     pbr/pbr_forward_pass.c
     pbr/sphere_pass.c
     load/gltf.c
