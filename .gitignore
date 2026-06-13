@@ -4,7 +4,6 @@ compile_commands.json
 *.spv
 .DS_Store
 docs/
-README.md
 bench.json
 benchmarks/baselines/
 tests/benchmarks/
