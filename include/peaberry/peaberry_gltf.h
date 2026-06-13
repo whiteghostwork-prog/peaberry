@@ -10,16 +10,26 @@
 #include "peaberry/peaberry_math.h"
 #include "peaberry/peaberry_vk.h"
 
+#include <stdint.h>
+
 typedef struct pb_gltf_scene pb_gltf_scene;
+
+enum {
+    PB_GLTF_SCENE_INDEX_DEFAULT = UINT32_MAX,
+};
 
 typedef struct pb_gltf_scene_desc {
     pb_context *context;
     const char *path;
+    uint32_t scene_index;
 } pb_gltf_scene_desc;
 
 pb_gltf_scene *pb_gltf_scene_create(const pb_gltf_scene_desc *desc);
 void pb_gltf_scene_destroy(pb_gltf_scene *scene);
 
+bool pb_gltf_file_scene_count(const char *path, uint32_t *out_count);
+
+uint32_t pb_gltf_scene_index(const pb_gltf_scene *scene);
 uint32_t pb_gltf_scene_draw_count(const pb_gltf_scene *scene);
 uint32_t pb_gltf_scene_material_count(const pb_gltf_scene *scene);
 

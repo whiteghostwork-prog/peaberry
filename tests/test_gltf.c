@@ -5,8 +5,16 @@
 
 #include "peaberry/peaberry.h"
 #include "peaberry/peaberry_gltf.h"
+#include "peaberry/peaberry_math.h"
 #include "peaberry/peaberry_vk.h"
 #include "test.h"
+
+#include <math.h>
+
+static float mat4_translation(const pb_mat4 m, int axis)
+{
+    return m[3][axis];
+}
 
 #ifndef PEABERRY_ASSET_DIR
 #define PEABERRY_ASSET_DIR "assets"
@@ -35,6 +43,7 @@ PB_TEST(test_gltf_parse_cube)
     pb_gltf_scene_desc scene_desc = {
         .context = ctx,
         .path = path,
+        .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
     };
 
     pb_gltf_scene *scene = pb_gltf_scene_create(&scene_desc);
@@ -73,6 +82,7 @@ PB_TEST(test_gltf_alpha_modes)
         &(pb_gltf_scene_desc){
             .context = ctx,
             .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
         });
     if (!scene) {
         pb_context_destroy(ctx);
@@ -123,6 +133,7 @@ PB_TEST(test_gltf_draw_sort_scene)
         &(pb_gltf_scene_desc){
             .context = ctx,
             .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
         });
     if (!scene) {
         pb_context_destroy(ctx);
@@ -165,6 +176,7 @@ PB_TEST(test_gltf_double_sided)
         &(pb_gltf_scene_desc){
             .context = ctx,
             .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
         });
     if (!scene) {
         pb_context_destroy(ctx);
@@ -185,6 +197,69 @@ PB_TEST(test_gltf_double_sided)
     PB_TEST_PASS();
 }
 
+PB_TEST(test_gltf_hierarchy)
+{
+    char path[512];
+    const int path_len = snprintf(path, sizeof(path), "%s/models/test_hierarchy.gltf", PEABERRY_ASSET_DIR);
+    PB_ASSERT(path_len >= 0 && path_len < (int)sizeof(path));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry gltf hierarchy test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    uint32_t scene_count = 0;
+    PB_ASSERT(pb_gltf_file_scene_count(path, &scene_count));
+    PB_ASSERT(scene_count == 2);
+
+    pb_gltf_scene *default_scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    if (!default_scene) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("test_hierarchy.gltf missing or load failed");
+    }
+
+    PB_ASSERT(pb_gltf_scene_index(default_scene) == 1);
+    PB_ASSERT(pb_gltf_scene_draw_count(default_scene) == 1);
+
+    pb_gltf_draw_info draw = {0};
+    PB_ASSERT(pb_gltf_scene_get_draw(default_scene, 0, &draw));
+    PB_ASSERT(fabsf(mat4_translation(draw.world, 0) - 3.5f) < 1e-4f);
+
+    pb_gltf_scene_destroy(default_scene);
+
+    pb_gltf_scene *multi_root = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = 0,
+        });
+    PB_ASSERT(multi_root != NULL);
+    PB_ASSERT(pb_gltf_scene_index(multi_root) == 0);
+    PB_ASSERT(pb_gltf_scene_draw_count(multi_root) == 2);
+
+    PB_ASSERT(pb_gltf_scene_get_draw(multi_root, 0, &draw));
+    PB_ASSERT(fabsf(mat4_translation(draw.world, 0) - 3.5f) < 1e-4f);
+    PB_ASSERT(pb_gltf_scene_get_draw(multi_root, 1, &draw));
+    PB_ASSERT(fabsf(mat4_translation(draw.world, 0) - 10.0f) < 1e-4f);
+
+    pb_gltf_scene_destroy(multi_root);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
 void pb_run_gltf_tests(void)
 {
     printf("gltf tests\n");
@@ -192,4 +267,5 @@ void pb_run_gltf_tests(void)
     PB_RUN_TEST(test_gltf_alpha_modes);
     PB_RUN_TEST(test_gltf_draw_sort_scene);
     PB_RUN_TEST(test_gltf_double_sided);
+    PB_RUN_TEST(test_gltf_hierarchy);
 }

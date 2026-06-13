@@ -54,6 +54,7 @@ static bool gltf_setup(pb_bench_scenario *scenario, pb_context *context, VkRende
         &(pb_gltf_scene_desc){
             .context = context,
             .path = model_path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
         });
     if (!state->scene) {
         fprintf(stderr, "failed to load glTF model: %s\n", model_path);

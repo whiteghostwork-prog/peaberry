@@ -469,6 +469,75 @@ static bool create_materials(pb_context *context, cgltf_data *data, const char *
     return true;
 }
 
+static const cgltf_scene *resolve_gltf_scene(const cgltf_data *data, uint32_t scene_index)
+{
+    if (data->scenes_count == 0) {
+        return NULL;
+    }
+
+    if (scene_index == PB_GLTF_SCENE_INDEX_DEFAULT) {
+        if (data->scene) {
+            return data->scene;
+        }
+        return &data->scenes[0];
+    }
+
+    if (scene_index >= data->scenes_count) {
+        return NULL;
+    }
+
+    return &data->scenes[scene_index];
+}
+
+static bool collect_scene_draws(
+    pb_context *context,
+    const cgltf_data *data,
+    const cgltf_scene *gltf_scene,
+    const char *gltf_dir,
+    pb_gltf_scene *scene)
+{
+    if (!gltf_scene) {
+        return false;
+    }
+
+    pb_mat4 identity = {0};
+    pb_mat4_identity(identity);
+
+    uint32_t draw_capacity = 0;
+    for (cgltf_size i = 0; i < gltf_scene->nodes_count; ++i) {
+        traverse_node(
+            context,
+            gltf_scene->nodes[i],
+            identity,
+            gltf_dir,
+            &scene->draws,
+            &scene->draw_count,
+            &draw_capacity,
+            data);
+    }
+
+    return scene->draw_count > 0;
+}
+
+bool pb_gltf_file_scene_count(const char *path, uint32_t *out_count)
+{
+    if (!path || !out_count) {
+        return false;
+    }
+
+    cgltf_options options = {0};
+    cgltf_data *data = NULL;
+    const cgltf_result result = cgltf_parse_file(&options, path, &data);
+    if (result != cgltf_result_success || !data) {
+        cgltf_free(data);
+        return false;
+    }
+
+    *out_count = data->scenes_count;
+    cgltf_free(data);
+    return true;
+}
+
 pb_gltf_scene *pb_gltf_scene_create(const pb_gltf_scene_desc *desc)
 {
     if (!desc || !desc->context || !desc->path) {
@@ -514,28 +583,25 @@ pb_gltf_scene *pb_gltf_scene_create(const pb_gltf_scene_desc *desc)
         return NULL;
     }
 
-    pb_mat4 identity = {0};
-    pb_mat4_identity(identity);
-
-    uint32_t draw_capacity = 0;
-    const cgltf_scene *gltf_scene = data->scene;
-    if (!gltf_scene && data->scenes_count > 0) {
-        gltf_scene = &data->scenes[0];
-    }
+    const uint32_t requested = desc->scene_index;
+    const cgltf_scene *gltf_scene = resolve_gltf_scene(data, requested);
+    bool loaded = false;
 
     if (gltf_scene) {
-        for (cgltf_size i = 0; i < gltf_scene->nodes_count; ++i) {
-            traverse_node(
-                desc->context,
-                gltf_scene->nodes[i],
-                identity,
-                gltf_dir,
-                &scene->draws,
-                &scene->draw_count,
-                &draw_capacity,
-                data);
+        loaded = collect_scene_draws(desc->context, data, gltf_scene, gltf_dir, scene);
+        if (loaded) {
+            scene->scene_index =
+                requested == PB_GLTF_SCENE_INDEX_DEFAULT
+                ? (uint32_t)(data->scene ? (size_t)(data->scene - data->scenes) : 0)
+                : requested;
         }
-    } else {
+    }
+
+    if (!loaded) {
+        pb_mat4 identity = {0};
+        pb_mat4_identity(identity);
+
+        uint32_t draw_capacity = 0;
         for (cgltf_size i = 0; i < data->nodes_count; ++i) {
             if (data->nodes[i].parent == NULL) {
                 traverse_node(
@@ -549,17 +615,24 @@ pb_gltf_scene *pb_gltf_scene_create(const pb_gltf_scene_desc *desc)
                     data);
             }
         }
+
+        if (scene->draw_count == 0) {
+            pb_log_error("glTF file contains no drawable primitives: %s", desc->path);
+            pb_gltf_scene_destroy(scene);
+            cgltf_free(data);
+            return NULL;
+        }
+
+        scene->scene_index = PB_GLTF_SCENE_INDEX_DEFAULT;
     }
 
     cgltf_free(data);
 
-    if (scene->draw_count == 0) {
-        pb_log_error("glTF file contains no drawable primitives: %s", desc->path);
-        pb_gltf_scene_destroy(scene);
-        return NULL;
-    }
-
-    pb_log_info("Loaded glTF scene: %u draws, %u materials", scene->draw_count, scene->material_count);
+    pb_log_info(
+        "Loaded glTF scene %u: %u draws, %u materials",
+        scene->scene_index,
+        scene->draw_count,
+        scene->material_count);
     return scene;
 }
 
@@ -592,6 +665,11 @@ void pb_gltf_scene_destroy(pb_gltf_scene *scene)
     free(scene->draws);
     free(scene->materials);
     free(scene);
+}
+
+uint32_t pb_gltf_scene_index(const pb_gltf_scene *scene)
+{
+    return scene ? scene->scene_index : 0;
 }
 
 uint32_t pb_gltf_scene_draw_count(const pb_gltf_scene *scene)

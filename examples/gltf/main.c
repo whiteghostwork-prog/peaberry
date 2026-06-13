@@ -87,6 +87,7 @@ int main(int argc, char **argv)
         &(pb_gltf_scene_desc){
             .context = ctx,
             .path = model_path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
         });
     if (!scene) {
         fprintf(stderr, "Failed to load glTF: %s\n", model_path);

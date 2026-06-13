@@ -56,6 +56,7 @@ struct pb_gltf_scene {
     uint32_t draw_count;
     pb_gltf_material *materials;
     uint32_t material_count;
+    uint32_t scene_index;
 };
 
 #endif

@@ -492,6 +492,7 @@ PB_TEST(test_gltf_forward_pass_pixel)
         &(pb_gltf_scene_desc){
             .context = ctx,
             .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
         });
     if (!fx.scene) {
         destroy_fixture(&fx);
