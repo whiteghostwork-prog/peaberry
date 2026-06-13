@@ -14,6 +14,10 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+/* Orbit radius from target; unit cube half-extent is 0.5, diagonal ~0.866. */
+#define PB_EXAMPLE_CAMERA_MIN_DISTANCE 1.6f
+#define PB_EXAMPLE_CAMERA_MAX_DISTANCE 50.0f
+
 struct pb_example_camera {
     float azimuth_rad;
     float elevation_rad;
@@ -80,21 +84,13 @@ void pb_example_camera_update(
     }
 
     if (scroll_dy != 0.0f) {
-        cam->distance -= scroll_dy * 0.5f;
-        if (cam->distance < 0.2f) {
-            cam->distance = 0.2f;
+        /* Multiplicative dolly only — keep FOV fixed so zoom-in does not blow up perspective. */
+        cam->distance *= expf(-scroll_dy * 0.15f);
+        if (cam->distance < PB_EXAMPLE_CAMERA_MIN_DISTANCE) {
+            cam->distance = PB_EXAMPLE_CAMERA_MIN_DISTANCE;
         }
-        if (cam->distance > 50.0f) {
-            cam->distance = 50.0f;
-        }
-
-        /* zoom also adjusts FOV for a dolly-zoom feel */
-        cam->fov_deg = 45.0f * (3.0f / cam->distance);
-        if (cam->fov_deg < 5.0f) {
-            cam->fov_deg = 5.0f;
-        }
-        if (cam->fov_deg > 120.0f) {
-            cam->fov_deg = 120.0f;
+        if (cam->distance > PB_EXAMPLE_CAMERA_MAX_DISTANCE) {
+            cam->distance = PB_EXAMPLE_CAMERA_MAX_DISTANCE;
         }
     }
 }

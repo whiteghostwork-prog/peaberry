@@ -73,6 +73,27 @@ bool pb_gltf_scene_material_info(
     uint32_t material_index,
     pb_gltf_material_info *out);
 
+typedef enum pb_gltf_texture_map {
+    PB_GLTF_TEXTURE_ALBEDO = 0,
+    PB_GLTF_TEXTURE_METALLIC_ROUGHNESS = 1,
+    PB_GLTF_TEXTURE_NORMAL = 2,
+    PB_GLTF_TEXTURE_OCCLUSION = 3,
+    PB_GLTF_TEXTURE_EMISSIVE = 4,
+} pb_gltf_texture_map;
+
+typedef struct pb_gltf_uv_transform {
+    float offset[2];
+    float rotation;
+    float scale[2];
+    bool enabled;
+} pb_gltf_uv_transform;
+
+bool pb_gltf_scene_material_uv_transform(
+    const pb_gltf_scene *scene,
+    uint32_t material_index,
+    pb_gltf_texture_map map,
+    pb_gltf_uv_transform *out);
+
 typedef struct pb_pbr_forward_pass pb_pbr_forward_pass;
 
 typedef struct pb_pbr_forward_pass_desc {

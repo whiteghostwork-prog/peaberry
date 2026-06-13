@@ -1,8 +1,21 @@
 {
   "asset": {
     "version": "2.0",
-    "generator": "peaberry test asset (Phase 9.4)"
+    "generator": "peaberry test asset (Phase 9.5)"
   },
+  "extensionsUsed": [
+    "KHR_texture_transform"
+  ],
+  "images": [
+    {
+      "uri": "../checker.png"
+    }
+  ],
+  "textures": [
+    {
+      "source": 0
+    }
+  ],
   "buffers": [
     {
       "byteLength": 840,
@@ -65,11 +78,20 @@
   ],
   "materials": [
     {
-      "name": "default",
+      "name": "transformed_checker",
       "pbrMetallicRoughness": {
-        "baseColorFactor": [0.8, 0.2, 0.2, 1.0],
-        "metallicFactor": 0.1,
-        "roughnessFactor": 0.6
+        "baseColorTexture": {
+          "index": 0,
+          "extensions": {
+            "KHR_texture_transform": {
+              "offset": [0.25, 0.25],
+              "scale": [0.5, 0.5]
+            }
+          }
+        },
+        "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.8
       }
     }
   ],
@@ -90,35 +112,13 @@
   ],
   "nodes": [
     {
-      "name": "leaf",
-      "mesh": 0,
-      "translation": [0.5, 0.0, 0.0]
-    },
-    {
-      "name": "middle",
-      "translation": [1.0, 0.0, 0.0],
-      "children": [0]
-    },
-    {
-      "name": "chain_root",
-      "translation": [-1.5, 0.0, 0.0],
-      "children": [1]
-    },
-    {
-      "name": "second_root",
-      "mesh": 0,
-      "translation": [10.0, 0.0, 0.0]
+      "mesh": 0
     }
   ],
   "scenes": [
     {
-      "name": "multi_root",
-      "nodes": [2, 3]
-    },
-    {
-      "name": "nested_only",
-      "nodes": [2]
+      "nodes": [0]
     }
   ],
-  "scene": 1
+  "scene": 0
 }

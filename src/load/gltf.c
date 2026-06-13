@@ -98,6 +98,44 @@ static bool load_image_texture(
     return pb_rhi_texture_create_from_file(context, path, srgb, out);
 }
 
+static void set_uv_transform_identity(float a[4], float b[4])
+{
+    a[0] = 0.0f;
+    a[1] = 0.0f;
+    a[2] = 0.0f;
+    a[3] = 0.0f;
+    b[0] = 1.0f;
+    b[1] = 1.0f;
+    b[2] = 0.0f;
+    b[3] = 0.0f;
+}
+
+static void load_uv_transform(const cgltf_texture_view *view, float a[4], float b[4])
+{
+    set_uv_transform_identity(a, b);
+
+    if (!view || !view->has_transform) {
+        return;
+    }
+
+    const cgltf_texture_transform *transform = &view->transform;
+    a[0] = (float)transform->offset[0];
+    a[1] = (float)transform->offset[1];
+    a[2] = (float)transform->rotation;
+    a[3] = 1.0f;
+    b[0] = (float)transform->scale[0];
+    b[1] = (float)transform->scale[1];
+}
+
+static void set_material_uv_transform(pb_gltf_material *dst, uint32_t slot, const cgltf_texture_view *view)
+{
+    if (slot >= 5) {
+        return;
+    }
+
+    load_uv_transform(view, dst->material_data.uv_transform_a[slot], dst->material_data.uv_transform_b[slot]);
+}
+
 static bool load_material_textures(
     pb_context *context,
     const cgltf_material *src,
@@ -127,6 +165,12 @@ static bool load_material_textures(
     dst->alpha_mode = PB_GLTF_ALPHA_OPAQUE;
     dst->double_sided = false;
 
+    for (uint32_t slot = 0; slot < 5; ++slot) {
+        set_uv_transform_identity(
+            dst->material_data.uv_transform_a[slot],
+            dst->material_data.uv_transform_b[slot]);
+    }
+
     if (src) {
         dst->double_sided = src->double_sided ? true : false;
         dst->material_data.double_sided = dst->double_sided ? 1.0f : 0.0f;
@@ -155,6 +199,7 @@ static bool load_material_textures(
         dst->material_data.roughness_factor = pbr->roughness_factor;
 
         if (pbr->base_color_texture.texture) {
+            set_material_uv_transform(dst, PB_GLTF_TEXTURE_ALBEDO, &pbr->base_color_texture);
             pb_rhi_texture_destroy(context, &dst->albedo);
             if (!load_image_texture(
                     context,
@@ -168,6 +213,7 @@ static bool load_material_textures(
         }
 
         if (pbr->metallic_roughness_texture.texture) {
+            set_material_uv_transform(dst, PB_GLTF_TEXTURE_METALLIC_ROUGHNESS, &pbr->metallic_roughness_texture);
             pb_rhi_texture_destroy(context, &dst->metallic_roughness);
             if (!load_image_texture(
                     context,
@@ -182,6 +228,7 @@ static bool load_material_textures(
     }
 
     if (src && src->normal_texture.texture) {
+        set_material_uv_transform(dst, PB_GLTF_TEXTURE_NORMAL, &src->normal_texture);
         pb_rhi_texture_destroy(context, &dst->normal);
         if (!load_image_texture(
                 context,
@@ -195,6 +242,7 @@ static bool load_material_textures(
     }
 
     if (src && src->occlusion_texture.texture) {
+        set_material_uv_transform(dst, PB_GLTF_TEXTURE_OCCLUSION, &src->occlusion_texture);
         pb_rhi_texture_destroy(context, &dst->occlusion);
         dst->material_data.occlusion_strength = src->occlusion_texture.scale;
         if (!load_image_texture(
@@ -209,6 +257,7 @@ static bool load_material_textures(
     }
 
     if (src && src->emissive_texture.texture) {
+        set_material_uv_transform(dst, PB_GLTF_TEXTURE_EMISSIVE, &src->emissive_texture);
         pb_rhi_texture_destroy(context, &dst->emissive);
         dst->material_data.emissive_factor[0] = src->emissive_factor[0];
         dst->material_data.emissive_factor[1] = src->emissive_factor[1];
@@ -713,6 +762,29 @@ bool pb_gltf_scene_material_factors(
     out->albedo_factor[2] = material->albedo_factor[2];
     out->metallic_factor = material->metallic_factor;
     out->roughness_factor = material->roughness_factor;
+    return true;
+}
+
+bool pb_gltf_scene_material_uv_transform(
+    const pb_gltf_scene *scene,
+    uint32_t material_index,
+    pb_gltf_texture_map map,
+    pb_gltf_uv_transform *out)
+{
+    if (!scene || !out || material_index >= scene->material_count || map > PB_GLTF_TEXTURE_EMISSIVE) {
+        return false;
+    }
+
+    const pb_material_ubo *material = &scene->materials[material_index].material_data;
+    const float *a = material->uv_transform_a[map];
+    const float *b = material->uv_transform_b[map];
+
+    out->offset[0] = a[0];
+    out->offset[1] = a[1];
+    out->rotation = a[2];
+    out->scale[0] = b[0];
+    out->scale[1] = b[1];
+    out->enabled = a[3] > 0.5f;
     return true;
 }
 

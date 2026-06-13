@@ -28,6 +28,8 @@ typedef struct pb_material_ubo {
     float base_color_alpha;
     float alpha_mode;
     float double_sided;
+    float uv_transform_a[5][4];
+    float uv_transform_b[5][4];
 } pb_material_ubo;
 
 typedef struct pb_gltf_material {

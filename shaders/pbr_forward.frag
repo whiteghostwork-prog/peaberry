@@ -20,6 +20,8 @@ layout(set = 0, binding = 1) uniform MaterialLight {
     float base_color_alpha;
     float alpha_mode;
     float double_sided;
+    vec4 uv_transform_a[5];
+    vec4 uv_transform_b[5];
 } material;
 
 layout(set = 0, binding = 2) uniform sampler2D u_albedo;
@@ -87,17 +89,38 @@ vec3 aces_tonemap(vec3 color)
     return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
 }
 
+vec2 transform_uv(vec2 uv, int slot)
+{
+    vec4 params = material.uv_transform_a[slot];
+    if (params.w < 0.5) {
+        return uv;
+    }
+
+    vec2 scale = material.uv_transform_b[slot].xy;
+    uv *= scale;
+    float c = cos(params.z);
+    float s = sin(params.z);
+    uv = vec2(c * uv.x - s * uv.y, s * uv.x + c * uv.y);
+    return uv + params.xy;
+}
+
 void main()
 {
-    vec4 albedo_sample = texture(u_albedo, v_uv);
+    vec2 uv_albedo = transform_uv(v_uv, 0);
+    vec2 uv_mr = transform_uv(v_uv, 1);
+    vec2 uv_normal = transform_uv(v_uv, 2);
+    vec2 uv_occlusion = transform_uv(v_uv, 3);
+    vec2 uv_emissive = transform_uv(v_uv, 4);
+
+    vec4 albedo_sample = texture(u_albedo, uv_albedo);
     vec3 albedo = albedo_sample.rgb * material.albedo_factor;
     float alpha = albedo_sample.a * material.base_color_alpha;
-    vec3 mr_sample = texture(u_metallic_roughness, v_uv).rgb;
+    vec3 mr_sample = texture(u_metallic_roughness, uv_mr).rgb;
     float roughness = mr_sample.g * material.roughness_factor;
     float metallic = mr_sample.b * material.metallic_factor;
     roughness = clamp(roughness, 0.04, 1.0);
 
-    vec3 tangent_normal = texture(u_normal, v_uv).rgb * 2.0 - 1.0;
+    vec3 tangent_normal = texture(u_normal, uv_normal).rgb * 2.0 - 1.0;
     vec3 T = normalize(v_tangent);
     vec3 B = normalize(v_bitangent);
     vec3 N_geom = normalize(v_normal);
@@ -145,12 +168,12 @@ void main()
     vec3 ambient = kD * diffuse_ibl + specular_ibl;
 
     /* occlusion: sample R channel, mix with strength, modulate ambient + direct */
-    float occlusion = mix(1.0, texture(u_occlusion, v_uv).r, material.occlusion_strength);
+    float occlusion = mix(1.0, texture(u_occlusion, uv_occlusion).r, material.occlusion_strength);
 
     vec3 color = (direct + ambient) * occlusion;
 
     /* emissive: add unlit contribution */
-    vec3 emissive = texture(u_emissive, v_uv).rgb * material.emissive_factor;
+    vec3 emissive = texture(u_emissive, uv_emissive).rgb * material.emissive_factor;
     color += emissive;
 
     color = aces_tonemap(color * frame.exposure);

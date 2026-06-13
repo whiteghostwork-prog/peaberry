@@ -23,6 +23,15 @@
 static char g_vert_spv[512];
 static char g_frag_spv[512];
 
+static double g_scroll_y;
+
+static void gltf_scroll_callback(GLFWwindow *window, double xoffset, double yoffset)
+{
+    (void)window;
+    (void)xoffset;
+    g_scroll_y += yoffset;
+}
+
 static void resource_paths(void)
 {
     snprintf(g_vert_spv, sizeof(g_vert_spv), "%s/pbr_forward.vert.spv", PEABERRY_SHADER_DIR);
@@ -127,6 +136,7 @@ int main(int argc, char **argv)
     }
 
     GLFWwindow *window = pb_example_wsi_window(wsi);
+    glfwSetScrollCallback(window, gltf_scroll_callback);
     double prev_mouse_x = 0.0, prev_mouse_y = 0.0;
     bool first_mouse = true;
     double prev_time = glfwGetTime();
@@ -158,10 +168,15 @@ int main(int argc, char **argv)
         /* GLFW scroll callback isn't easily accessible from the WSI helper;
          * we handle scroll via glfwGetKey(GLFW_KEY_UP/DOWN) as a fallback,
          * and document that proper scroll requires extending the WSI helper. */
-        float scroll_dy = 0.0f;
-        /* approximate scroll via key fallback */
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) scroll_dy += 1.0f;
-        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) scroll_dy -= 1.0f;
+        /* Mouse wheel zoom; Q/E are slower keyboard fallback. */
+        float scroll_dy = (float)g_scroll_y;
+        g_scroll_y = 0.0;
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
+            scroll_dy += 0.08f;
+        }
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
+            scroll_dy -= 0.08f;
+        }
 
         const bool left_down = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
 
