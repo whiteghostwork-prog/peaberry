@@ -50,6 +50,7 @@ typedef struct pb_gltf_material_info {
     pb_gltf_alpha_mode alpha_mode;
     float alpha_cutoff;
     float base_color_alpha;
+    bool double_sided;
 } pb_gltf_material_info;
 
 bool pb_gltf_scene_material_factors(

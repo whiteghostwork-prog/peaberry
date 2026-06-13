@@ -93,6 +93,7 @@ PB_TEST(test_gltf_alpha_modes)
     PB_ASSERT(pb_gltf_scene_material_info(scene, 2, &info));
     PB_ASSERT(info.alpha_mode == PB_GLTF_ALPHA_BLEND);
     PB_ASSERT(info.base_color_alpha > 0.24f && info.base_color_alpha < 0.26f);
+    PB_ASSERT(!info.double_sided);
 
     pb_gltf_scene_destroy(scene);
     pb_context_destroy(ctx);
@@ -134,6 +135,50 @@ PB_TEST(test_gltf_draw_sort_scene)
     pb_gltf_material_info info = {0};
     PB_ASSERT(pb_gltf_scene_material_info(scene, 0, &info));
     PB_ASSERT(info.alpha_mode == PB_GLTF_ALPHA_BLEND);
+    PB_ASSERT(info.double_sided);
+
+    pb_gltf_scene_destroy(scene);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
+PB_TEST(test_gltf_double_sided)
+{
+    char path[512];
+    const int path_len = snprintf(path, sizeof(path), "%s/models/test_double_sided.gltf", PEABERRY_ASSET_DIR);
+    PB_ASSERT(path_len >= 0 && path_len < (int)sizeof(path));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry gltf double sided test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    pb_gltf_scene *scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+        });
+    if (!scene) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("test_double_sided.gltf missing or load failed");
+    }
+
+    PB_ASSERT(pb_gltf_scene_material_count(scene) == 2);
+
+    pb_gltf_material_info info = {0};
+    PB_ASSERT(pb_gltf_scene_material_info(scene, 0, &info));
+    PB_ASSERT(!info.double_sided);
+
+    PB_ASSERT(pb_gltf_scene_material_info(scene, 1, &info));
+    PB_ASSERT(info.double_sided);
 
     pb_gltf_scene_destroy(scene);
     pb_context_destroy(ctx);
@@ -146,4 +191,5 @@ void pb_run_gltf_tests(void)
     PB_RUN_TEST(test_gltf_parse_cube);
     PB_RUN_TEST(test_gltf_alpha_modes);
     PB_RUN_TEST(test_gltf_draw_sort_scene);
+    PB_RUN_TEST(test_gltf_double_sided);
 }

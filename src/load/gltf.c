@@ -12,6 +12,7 @@
 #include "rhi/mesh.h"
 #include "rhi/texture.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -124,8 +125,11 @@ static bool load_material_textures(
     dst->material_data.base_color_alpha = 1.0f;
     dst->material_data.alpha_mode = (float)PB_GLTF_ALPHA_OPAQUE;
     dst->alpha_mode = PB_GLTF_ALPHA_OPAQUE;
+    dst->double_sided = false;
 
     if (src) {
+        dst->double_sided = src->double_sided ? true : false;
+        dst->material_data.double_sided = dst->double_sided ? 1.0f : 0.0f;
         switch (src->alpha_mode) {
         case cgltf_alpha_mode_mask:
             dst->alpha_mode = PB_GLTF_ALPHA_MASK;
@@ -240,7 +244,9 @@ static cgltf_accessor *find_attribute(const cgltf_primitive *prim, cgltf_attribu
 static bool build_primitive_mesh(
     pb_context *context,
     const cgltf_primitive *prim,
-    pb_rhi_mesh *mesh)
+    pb_rhi_mesh *mesh,
+    float bounds_min[3],
+    float bounds_max[3])
 {
     const cgltf_accessor *pos_attr = find_attribute(prim, cgltf_attribute_type_position);
     if (!pos_attr) {
@@ -258,9 +264,19 @@ static bool build_primitive_mesh(
     }
 
     bool has_tangent = tan_attr != NULL;
+    bounds_min[0] = bounds_min[1] = bounds_min[2] = INFINITY;
+    bounds_max[0] = bounds_max[1] = bounds_max[2] = -INFINITY;
 
     for (uint32_t i = 0; i < vertex_count; ++i) {
         cgltf_accessor_read_float(pos_attr, i, vertices[i].pos, 3);
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            if (vertices[i].pos[axis] < bounds_min[axis]) {
+                bounds_min[axis] = vertices[i].pos[axis];
+            }
+            if (vertices[i].pos[axis] > bounds_max[axis]) {
+                bounds_max[axis] = vertices[i].pos[axis];
+            }
+        }
         if (norm_attr) {
             cgltf_accessor_read_float(norm_attr, i, vertices[i].normal, 3);
         } else {
@@ -389,7 +405,7 @@ static void traverse_node(
                 draw->material_index = (uint32_t)(prim->material - data->materials);
             }
 
-            if (!build_primitive_mesh(context, prim, &draw->mesh)) {
+            if (!build_primitive_mesh(context, prim, &draw->mesh, draw->bounds_min, draw->bounds_max)) {
                 pb_log_error("Failed to build glTF primitive mesh");
                 continue;
             }
@@ -430,6 +446,8 @@ static bool create_materials(pb_context *context, cgltf_data *data, const char *
         mat->material_data.base_color_alpha = 1.0f;
         mat->material_data.alpha_mode = (float)PB_GLTF_ALPHA_OPAQUE;
         mat->alpha_mode = PB_GLTF_ALPHA_OPAQUE;
+        mat->double_sided = false;
+        mat->material_data.double_sided = 0.0f;
 
         if (!load_material_textures(context, src, gltf_dir, mat)) {
             return false;
@@ -633,5 +651,6 @@ bool pb_gltf_scene_material_info(
     out->alpha_mode = material->alpha_mode;
     out->alpha_cutoff = material->material_data.alpha_cutoff;
     out->base_color_alpha = material->material_data.base_color_alpha;
+    out->double_sided = material->double_sided;
     return true;
 }

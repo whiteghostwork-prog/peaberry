@@ -27,11 +27,12 @@ typedef struct pb_material_ubo {
     float alpha_cutoff;
     float base_color_alpha;
     float alpha_mode;
-    float _pad1;
+    float double_sided;
 } pb_material_ubo;
 
 typedef struct pb_gltf_material {
     pb_gltf_alpha_mode alpha_mode;
+    bool double_sided;
     pb_rhi_texture albedo;
     pb_rhi_texture metallic_roughness;
     pb_rhi_texture normal;
@@ -45,6 +46,8 @@ typedef struct pb_gltf_draw {
     pb_rhi_mesh mesh;
     uint32_t material_index;
     pb_mat4 world;
+    float bounds_min[3];
+    float bounds_max[3];
 } pb_gltf_draw;
 
 struct pb_gltf_scene {

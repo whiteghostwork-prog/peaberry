@@ -57,10 +57,56 @@ PB_TEST(test_draw_sort_blend_back_to_front)
     PB_TEST_PASS();
 }
 
+PB_TEST(test_draw_sort_bounds_far_point)
+{
+    pb_mat4 view;
+    pb_mat4_identity(view);
+
+    pb_mat4 model;
+    pb_mat4_identity(model);
+    model[3][2] = 2.0f;
+
+    const float bounds_min[3] = { -0.5f, -0.5f, -0.5f };
+    const float bounds_max[3] = { 0.5f, 0.5f, 0.5f };
+
+    const float center_depth = pb_draw_sort_view_depth(view, model);
+    const float far_depth = pb_draw_sort_view_depth_bounds(
+        view, model, bounds_min, bounds_max, true);
+    const float near_depth = pb_draw_sort_view_depth_bounds(
+        view, model, bounds_min, bounds_max, false);
+
+    PB_ASSERT(far_depth > center_depth);
+    PB_ASSERT(near_depth < center_depth);
+    PB_TEST_PASS();
+}
+
+PB_TEST(test_draw_sort_blend_distance_order)
+{
+    const float camera[3] = { 0.0f, 0.0f, 0.0f };
+    const float bounds_min[3] = { -0.5f, -0.5f, -0.5f };
+    const float bounds_max[3] = { 0.5f, 0.5f, 0.5f };
+
+    pb_mat4 near_model;
+    pb_mat4_identity(near_model);
+    near_model[3][2] = 1.0f;
+
+    pb_mat4 far_model;
+    pb_mat4_identity(far_model);
+    far_model[3][2] = 3.0f;
+
+    const float near_dist = pb_draw_sort_blend_distance(camera, near_model, bounds_min, bounds_max);
+    const float far_dist = pb_draw_sort_blend_distance(camera, far_model, bounds_min, bounds_max);
+
+    PB_ASSERT(far_dist > near_dist);
+    PB_TEST_PASS();
+}
+
 void pb_run_draw_sort_tests(void)
 {
     printf("draw sort tests\n");
     PB_RUN_TEST(test_draw_sort_view_depth);
     PB_RUN_TEST(test_draw_sort_opaque_front_to_back);
     PB_RUN_TEST(test_draw_sort_blend_back_to_front);
+    PB_RUN_TEST(test_draw_sort_bounds_far_point);
+    PB_RUN_TEST(test_draw_sort_blend_distance_order);
 }

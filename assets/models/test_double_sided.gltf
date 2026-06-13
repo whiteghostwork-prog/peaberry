@@ -1,7 +1,7 @@
 {
   "asset": {
     "version": "2.0",
-    "generator": "peaberry test asset (Phase 9.2)"
+    "generator": "peaberry test asset (Phase 9.3)"
   },
   "buffers": [
     {
@@ -65,13 +65,21 @@
   ],
   "materials": [
     {
-      "name": "blend",
-      "alphaMode": "BLEND",
+      "name": "single_sided",
+      "doubleSided": false,
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.9, 0.2, 0.2, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.7
+      }
+    },
+    {
+      "name": "double_sided",
       "doubleSided": true,
       "pbrMetallicRoughness": {
-        "baseColorFactor": [0.2, 0.6, 1.0, 0.4],
+        "baseColorFactor": [0.2, 0.8, 0.3, 1.0],
         "metallicFactor": 0.0,
-        "roughnessFactor": 0.5
+        "roughnessFactor": 0.7
       }
     }
   ],
@@ -88,25 +96,34 @@
           "material": 0
         }
       ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "indices": 3,
+          "material": 1
+        }
+      ]
     }
   ],
   "nodes": [
     {
       "mesh": 0,
-      "translation": [0.0, 0.0, -1.5]
+      "translation": [-1.2, 0.0, 0.0]
     },
     {
-      "mesh": 0,
-      "translation": [0.0, 0.0, 0.0]
-    },
-    {
-      "mesh": 0,
-      "translation": [0.0, 0.0, 1.5]
+      "mesh": 1,
+      "translation": [1.2, 0.0, 0.0]
     }
   ],
   "scenes": [
     {
-      "nodes": [0, 1, 2]
+      "nodes": [0, 1]
     }
   ],
   "scene": 0

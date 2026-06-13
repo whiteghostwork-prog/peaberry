@@ -30,7 +30,9 @@ typedef struct pb_frame_ubo {
 struct pb_pbr_forward_pass {
     pb_context *context;
     VkPipeline pipeline_opaque;
+    VkPipeline pipeline_opaque_double;
     VkPipeline pipeline_blend;
+    VkPipeline pipeline_blend_back;
     VkPipelineLayout pipeline_layout;
     VkDescriptorSetLayout descriptor_set_layout;
     VkDescriptorPool descriptor_pool;
@@ -475,13 +477,18 @@ static bool create_pipeline(struct pb_pbr_forward_pass *pass, const pb_pbr_forwa
     const struct {
         bool depth_write;
         bool alpha_blend;
+        VkCullModeFlags cull_mode;
         VkPipeline *pipeline;
     } variants[] = {
-        { true, false, &pass->pipeline_opaque },
-        { false, true, &pass->pipeline_blend },
+        { true, false, VK_CULL_MODE_BACK_BIT, &pass->pipeline_opaque },
+        { true, false, VK_CULL_MODE_NONE, &pass->pipeline_opaque_double },
+        { false, true, VK_CULL_MODE_BACK_BIT, &pass->pipeline_blend },
+        { false, true, VK_CULL_MODE_FRONT_BIT, &pass->pipeline_blend_back },
     };
 
     for (size_t i = 0; i < sizeof(variants) / sizeof(variants[0]); ++i) {
+        rasterization.cullMode = variants[i].cull_mode;
+
         VkPipelineDepthStencilStateCreateInfo depth_stencil = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
             .depthTestEnable = VK_TRUE,
@@ -567,59 +574,101 @@ static void update_frame_uniforms(struct pb_pbr_forward_pass *pass, VkExtent2D e
     pb_rhi_buffer_upload(pass->context, &pass->frame_buffer, &frame, sizeof(frame));
 }
 
-static void record_sorted_draws(
+static VkPipeline select_opaque_pipeline(
+    const struct pb_pbr_forward_pass *pass,
+    const pb_gltf_material *material)
+{
+    return material->double_sided ? pass->pipeline_opaque_double : pass->pipeline_opaque;
+}
+
+static void record_one_draw(
+    struct pb_pbr_forward_pass *pass,
+    VkCommandBuffer cmd,
+    const pb_gltf_scene *scene,
+    const pb_gltf_draw *draw,
+    VkPipeline pipeline,
+    float time_seconds)
+{
+    if (draw->material_index >= pass->descriptor_set_count || draw->mesh.index_count == 0) {
+        return;
+    }
+
+    VkBuffer vertex_buffer = pb_rhi_buffer_handle(&draw->mesh.vertices);
+    VkBuffer index_buffer = pb_rhi_buffer_handle(&draw->mesh.indices);
+    if (vertex_buffer == VK_NULL_HANDLE || index_buffer == VK_NULL_HANDLE) {
+        return;
+    }
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindDescriptorSets(
+        cmd,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        pass->pipeline_layout,
+        0,
+        1,
+        &pass->descriptor_sets[draw->material_index],
+        0,
+        NULL);
+
+    pb_mat4 model;
+    memcpy(model, draw->world, sizeof(model));
+    pb_mat4_rotate_y(model, time_seconds * 0.4f, model);
+
+    vkCmdPushConstants(
+        cmd,
+        pass->pipeline_layout,
+        VK_SHADER_STAGE_VERTEX_BIT,
+        0,
+        sizeof(model),
+        model);
+
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);
+    vkCmdBindIndexBuffer(cmd, index_buffer, 0, draw->mesh.index_type);
+    vkCmdDrawIndexed(cmd, draw->mesh.index_count, 1, 0, 0, 0);
+}
+
+static void record_sorted_opaque_draws(
     struct pb_pbr_forward_pass *pass,
     VkCommandBuffer cmd,
     const pb_gltf_scene *scene,
     const pb_draw_sort_entry *entries,
     uint32_t count,
-    VkPipeline pipeline,
     float time_seconds)
 {
-    if (count == 0) {
-        return;
-    }
-
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    VkPipeline bound_pipeline = VK_NULL_HANDLE;
 
     for (uint32_t i = 0; i < count; ++i) {
         const pb_gltf_draw *draw = &scene->draws[entries[i].draw_index];
-        if (draw->material_index >= pass->descriptor_set_count || draw->mesh.index_count == 0) {
-            continue;
+        const pb_gltf_material *material = &scene->materials[draw->material_index];
+        const VkPipeline pipeline = select_opaque_pipeline(pass, material);
+
+        if (pipeline != bound_pipeline) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            bound_pipeline = pipeline;
         }
 
-        VkBuffer vertex_buffer = pb_rhi_buffer_handle(&draw->mesh.vertices);
-        VkBuffer index_buffer = pb_rhi_buffer_handle(&draw->mesh.indices);
-        if (vertex_buffer == VK_NULL_HANDLE || index_buffer == VK_NULL_HANDLE) {
-            continue;
+        record_one_draw(pass, cmd, scene, draw, pipeline, time_seconds);
+    }
+}
+
+static void record_sorted_blend_draws(
+    struct pb_pbr_forward_pass *pass,
+    VkCommandBuffer cmd,
+    const pb_gltf_scene *scene,
+    const pb_draw_sort_entry *entries,
+    uint32_t count,
+    float time_seconds)
+{
+    for (uint32_t i = 0; i < count; ++i) {
+        const pb_gltf_draw *draw = &scene->draws[entries[i].draw_index];
+        const pb_gltf_material *material = &scene->materials[draw->material_index];
+
+        if (material->double_sided) {
+            record_one_draw(pass, cmd, scene, draw, pass->pipeline_blend_back, time_seconds);
         }
 
-        vkCmdBindDescriptorSets(
-            cmd,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pass->pipeline_layout,
-            0,
-            1,
-            &pass->descriptor_sets[draw->material_index],
-            0,
-            NULL);
-
-        pb_mat4 model;
-        memcpy(model, draw->world, sizeof(model));
-        pb_mat4_rotate_y(model, time_seconds * 0.4f, model);
-
-        vkCmdPushConstants(
-            cmd,
-            pass->pipeline_layout,
-            VK_SHADER_STAGE_VERTEX_BIT,
-            0,
-            sizeof(model),
-            model);
-
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);
-        vkCmdBindIndexBuffer(cmd, index_buffer, 0, draw->mesh.index_type);
-        vkCmdDrawIndexed(cmd, draw->mesh.index_count, 1, 0, 0, 0);
+        record_one_draw(pass, cmd, scene, draw, pass->pipeline_blend, time_seconds);
     }
 }
 
@@ -692,8 +741,14 @@ void pb_pbr_forward_pass_destroy(pb_pbr_forward_pass *pass)
         if (pass->pipeline_opaque) {
             vkDestroyPipeline(device, pass->pipeline_opaque, NULL);
         }
+        if (pass->pipeline_opaque_double) {
+            vkDestroyPipeline(device, pass->pipeline_opaque_double, NULL);
+        }
         if (pass->pipeline_blend) {
             vkDestroyPipeline(device, pass->pipeline_blend, NULL);
+        }
+        if (pass->pipeline_blend_back) {
+            vkDestroyPipeline(device, pass->pipeline_blend_back, NULL);
         }
         if (pass->pipeline_layout) {
             vkDestroyPipelineLayout(device, pass->pipeline_layout, NULL);
@@ -787,16 +842,26 @@ void pb_pbr_forward_pass_record(
             memcpy(model, draw->world, sizeof(model));
             pb_mat4_rotate_y(model, time_seconds * 0.4f, model);
 
-            const float view_depth = pb_draw_sort_view_depth(frame.view, model);
             const pb_gltf_material *material = &scene->materials[draw->material_index];
             pb_draw_sort_entry entry = {
                 .draw_index = d,
-                .view_depth = view_depth,
+                .view_depth = 0.0f,
             };
 
             if (material->alpha_mode == PB_GLTF_ALPHA_BLEND) {
+                entry.view_depth = pb_draw_sort_blend_distance(
+                    frame.camera_pos,
+                    model,
+                    draw->bounds_min,
+                    draw->bounds_max);
                 blend_entries[blend_count++] = entry;
             } else {
+                entry.view_depth = pb_draw_sort_view_depth_bounds(
+                    frame.view,
+                    model,
+                    draw->bounds_min,
+                    draw->bounds_max,
+                    false);
                 opaque_entries[opaque_count++] = entry;
             }
         }
@@ -816,10 +881,8 @@ void pb_pbr_forward_pass_record(
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    record_sorted_draws(
-        pass, cmd, scene, opaque_entries, opaque_count, pass->pipeline_opaque, time_seconds);
-    record_sorted_draws(
-        pass, cmd, scene, blend_entries, blend_count, pass->pipeline_blend, time_seconds);
+    record_sorted_opaque_draws(pass, cmd, scene, opaque_entries, opaque_count, time_seconds);
+    record_sorted_blend_draws(pass, cmd, scene, blend_entries, blend_count, time_seconds);
 
     free(opaque_entries);
     free(blend_entries);

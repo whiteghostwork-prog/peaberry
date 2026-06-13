@@ -19,7 +19,7 @@ layout(set = 0, binding = 1) uniform MaterialLight {
     float alpha_cutoff;
     float base_color_alpha;
     float alpha_mode;
-    float _pad1;
+    float double_sided;
 } material;
 
 layout(set = 0, binding = 2) uniform sampler2D u_albedo;
@@ -101,9 +101,17 @@ void main()
     vec3 T = normalize(v_tangent);
     vec3 B = normalize(v_bitangent);
     vec3 N_geom = normalize(v_normal);
+    if (material.double_sided > 0.5 && !gl_FrontFacing) {
+        N_geom = -N_geom;
+    }
     vec3 N = N_geom;
     if (length(cross(N_geom, T)) > 1e-4) {
-        N = normalize(mat3(T, B, N_geom) * tangent_normal);
+        vec3 bitangent = B;
+        if (material.double_sided > 0.5 && !gl_FrontFacing) {
+            T = -T;
+            bitangent = -bitangent;
+        }
+        N = normalize(mat3(T, bitangent, N_geom) * tangent_normal);
     }
 
     vec3 V = normalize(frame.camera_pos - v_world_pos);
