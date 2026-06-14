@@ -12,6 +12,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -181,6 +182,14 @@ int main(int argc, char **argv)
         const bool left_down = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
 
         pb_example_camera_update(cam, mouse_dx, mouse_dy, scroll_dy, left_down, dt);
+
+        if (pb_gltf_scene_animation_count(scene) > 0) {
+            const float duration = pb_gltf_scene_animation_duration(scene, 0);
+            if (duration > 0.0f) {
+                const float anim_time = fmodf((float)now, duration);
+                pb_gltf_scene_update_animation(scene, 0, anim_time);
+            }
+        }
 
         if (pb_example_wsi_begin_frame(wsi, 0.02f, 0.02f, 0.025f, 1.0f)) {
             VkExtent2D extent = pb_example_wsi_extent(wsi);

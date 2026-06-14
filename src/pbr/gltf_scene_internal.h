@@ -13,6 +13,7 @@
 #include "rhi/texture.h"
 
 #include <stdint.h>
+#include <stdalign.h>
 #include <volk.h>
 
 typedef struct pb_material_ubo {
@@ -47,10 +48,68 @@ typedef struct pb_gltf_material {
 typedef struct pb_gltf_draw {
     pb_rhi_mesh mesh;
     uint32_t material_index;
-    pb_mat4 world;
+    uint32_t node_index;
+    alignas(16) pb_mat4 world;
     float bounds_min[3];
     float bounds_max[3];
 } pb_gltf_draw;
+
+typedef enum pb_gltf_anim_path {
+    PB_GLTF_ANIM_PATH_TRANSLATION = 0,
+    PB_GLTF_ANIM_PATH_ROTATION = 1,
+    PB_GLTF_ANIM_PATH_SCALE = 2,
+    PB_GLTF_ANIM_PATH_WEIGHTS = 3,
+} pb_gltf_anim_path;
+
+typedef enum pb_gltf_interpolation {
+    PB_GLTF_INTERPOLATION_LINEAR = 0,
+    PB_GLTF_INTERPOLATION_STEP = 1,
+    PB_GLTF_INTERPOLATION_CUBIC = 2,
+} pb_gltf_interpolation;
+
+typedef struct pb_gltf_anim_sampler {
+    float *input;
+    uint32_t input_count;
+    float *output;
+    uint32_t output_count;
+    uint32_t output_components;
+    pb_gltf_interpolation interpolation;
+} pb_gltf_anim_sampler;
+
+typedef struct pb_gltf_anim_channel {
+    uint32_t target_node;
+    uint32_t sampler_index;
+    pb_gltf_anim_path path;
+} pb_gltf_anim_channel;
+
+typedef struct pb_gltf_animation {
+    char *name;
+    float duration;
+    pb_gltf_anim_sampler *samplers;
+    uint32_t sampler_count;
+    pb_gltf_anim_channel *channels;
+    uint32_t channel_count;
+} pb_gltf_animation;
+
+typedef struct pb_gltf_node {
+    uint32_t parent;
+    float translation[3];
+    float rotation[4];
+    float scale[3];
+    bool has_translation;
+    bool has_rotation;
+    bool has_scale;
+    bool has_matrix;
+    alignas(16) pb_mat4 bind_matrix;
+    float anim_translation[3];
+    float anim_rotation[4];
+    float anim_scale[3];
+    bool anim_translation_active;
+    bool anim_rotation_active;
+    bool anim_scale_active;
+    alignas(16) pb_mat4 local;
+    alignas(16) pb_mat4 world;
+} pb_gltf_node;
 
 struct pb_gltf_scene {
     pb_context *context;
@@ -59,6 +118,10 @@ struct pb_gltf_scene {
     pb_gltf_material *materials;
     uint32_t material_count;
     uint32_t scene_index;
+    pb_gltf_node *nodes;
+    uint32_t node_count;
+    pb_gltf_animation *animations;
+    uint32_t animation_count;
 };
 
 #endif

@@ -589,6 +589,8 @@ static void record_one_draw(
     VkPipeline pipeline,
     float time_seconds)
 {
+    (void)time_seconds;
+
     if (draw->material_index >= pass->descriptor_set_count || draw->mesh.index_count == 0) {
         return;
     }
@@ -612,7 +614,6 @@ static void record_one_draw(
 
     pb_mat4 model;
     memcpy(model, draw->world, sizeof(model));
-    pb_mat4_rotate_y(model, time_seconds * 0.4f, model);
 
     vkCmdPushConstants(
         cmd,
@@ -840,7 +841,6 @@ void pb_pbr_forward_pass_record(
 
             pb_mat4 model;
             memcpy(model, draw->world, sizeof(model));
-            pb_mat4_rotate_y(model, time_seconds * 0.4f, model);
 
             const pb_gltf_material *material = &scene->materials[draw->material_index];
             pb_draw_sort_entry entry = {

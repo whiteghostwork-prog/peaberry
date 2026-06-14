@@ -312,6 +312,58 @@ PB_TEST(test_gltf_texture_transform)
     PB_TEST_PASS();
 }
 
+PB_TEST(test_gltf_animation)
+{
+    char path[512];
+    const int path_len =
+        snprintf(path, sizeof(path), "%s/models/test_animation.gltf", PEABERRY_ASSET_DIR);
+    PB_ASSERT(path_len >= 0 && path_len < (int)sizeof(path));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry gltf animation test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    pb_gltf_scene *scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    if (!scene) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("test_animation.gltf missing or load failed");
+    }
+
+    PB_ASSERT(pb_gltf_scene_animation_count(scene) == 1);
+    PB_ASSERT(fabsf(pb_gltf_scene_animation_duration(scene, 0) - 2.0f) < 1e-4f);
+
+    PB_ASSERT(pb_gltf_scene_update_animation(scene, 0, 0.0f));
+    pb_gltf_draw_info draw = {0};
+    PB_ASSERT(pb_gltf_scene_get_draw(scene, 0, &draw));
+    PB_ASSERT(fabsf(mat4_translation(draw.world, 0) - (-2.0f)) < 1e-3f);
+
+    PB_ASSERT(pb_gltf_scene_update_animation(scene, 0, 1.0f));
+    PB_ASSERT(pb_gltf_scene_get_draw(scene, 0, &draw));
+    PB_ASSERT(fabsf(mat4_translation(draw.world, 0) - 0.0f) < 1e-3f);
+
+    PB_ASSERT(pb_gltf_scene_update_animation(scene, 0, 1.5f));
+    PB_ASSERT(pb_gltf_scene_get_draw(scene, 0, &draw));
+    PB_ASSERT(fabsf(mat4_translation(draw.world, 0) - 1.0f) < 1e-3f);
+
+    pb_gltf_scene_destroy(scene);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
 void pb_run_gltf_tests(void)
 {
     printf("gltf tests\n");
@@ -321,4 +373,5 @@ void pb_run_gltf_tests(void)
     PB_RUN_TEST(test_gltf_double_sided);
     PB_RUN_TEST(test_gltf_hierarchy);
     PB_RUN_TEST(test_gltf_texture_transform);
+    PB_RUN_TEST(test_gltf_animation);
 }

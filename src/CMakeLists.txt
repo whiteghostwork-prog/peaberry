@@ -23,6 +23,7 @@ add_library(peaberry STATIC
     pbr/pbr_forward_pass.c
     pbr/sphere_pass.c
     load/gltf.c
+    load/gltf_animation.c
     load/tangent.c
 )
 

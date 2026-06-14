@@ -22,6 +22,8 @@ enum { PB_PATH_MAX = 4096 };
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 
+#include "load/gltf_animation.h"
+
 static void path_dirname(const char *path, char *out, size_t out_size)
 {
     if (!path || out_size == 0) {
@@ -429,6 +431,7 @@ static void traverse_node(
     pb_mat4_mul(parent_copy, local, world);
 
     if (node->mesh) {
+        const uint32_t node_index = (uint32_t)cgltf_node_index(data, node);
         const cgltf_mesh *mesh = node->mesh;
         for (cgltf_size p = 0; p < mesh->primitives_count; ++p) {
             const cgltf_primitive *prim = &mesh->primitives[p];
@@ -448,6 +451,7 @@ static void traverse_node(
 
             pb_gltf_draw *draw = &(*draws)[*draw_count];
             memset(draw, 0, sizeof(*draw));
+            draw->node_index = node_index;
             memcpy(draw->world, world, sizeof(draw->world));
 
             if (prim->material) {
@@ -675,6 +679,16 @@ pb_gltf_scene *pb_gltf_scene_create(const pb_gltf_scene_desc *desc)
         scene->scene_index = PB_GLTF_SCENE_INDEX_DEFAULT;
     }
 
+    if (!pb_gltf_scene_load_nodes_and_animations(data, scene)) {
+        pb_log_error("Failed to load glTF node/animation data: %s", desc->path);
+        pb_gltf_scene_destroy(scene);
+        cgltf_free(data);
+        return NULL;
+    }
+
+    pb_gltf_scene_sync_node_transforms(scene);
+    pb_gltf_scene_sync_draw_worlds(scene);
+
     cgltf_free(data);
 
     pb_log_info(
@@ -713,6 +727,7 @@ void pb_gltf_scene_destroy(pb_gltf_scene *scene)
 
     free(scene->draws);
     free(scene->materials);
+    pb_gltf_scene_free_nodes_and_animations(scene);
     free(scene);
 }
 
@@ -729,6 +744,24 @@ uint32_t pb_gltf_scene_draw_count(const pb_gltf_scene *scene)
 uint32_t pb_gltf_scene_material_count(const pb_gltf_scene *scene)
 {
     return scene ? scene->material_count : 0;
+}
+
+uint32_t pb_gltf_scene_animation_count(const pb_gltf_scene *scene)
+{
+    return scene ? scene->animation_count : 0;
+}
+
+float pb_gltf_scene_animation_duration(const pb_gltf_scene *scene, uint32_t clip_index)
+{
+    if (!scene || clip_index >= scene->animation_count) {
+        return 0.0f;
+    }
+    return scene->animations[clip_index].duration;
+}
+
+bool pb_gltf_scene_update_animation(pb_gltf_scene *scene, uint32_t clip_index, float time_seconds)
+{
+    return pb_gltf_scene_apply_animation(scene, clip_index, time_seconds);
 }
 
 bool pb_gltf_scene_get_draw(const pb_gltf_scene *scene, uint32_t draw_index, pb_gltf_draw_info *out)
