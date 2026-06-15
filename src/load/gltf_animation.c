@@ -13,11 +13,76 @@
 
 #include <stdalign.h>
 
+#define CGLM_FORCE_DEPTH_ZERO_TO_ONE
+#define CGLM_FORCE_LEFT_HANDED
+#include <cglm/cglm.h>
+
 #include "cgltf.h"
+#include "rhi/buffer.h"
 
 enum {
     PB_GLTF_NO_PARENT = UINT32_MAX,
 };
+
+static void mat4_invert(const pb_mat4 matrix, pb_mat4 out)
+{
+    glm_mat4_inv(matrix, out);
+}
+
+static bool load_skins(const cgltf_data *data, pb_gltf_scene *scene)
+{
+    scene->skin_count = (uint32_t)data->skins_count;
+    if (scene->skin_count == 0) {
+        return true;
+    }
+
+    scene->skins = calloc(scene->skin_count, sizeof(*scene->skins));
+    if (!scene->skins) {
+        return false;
+    }
+
+    for (uint32_t s = 0; s < scene->skin_count; ++s) {
+        const cgltf_skin *src = &data->skins[s];
+        pb_gltf_skin *dst = &scene->skins[s];
+
+        dst->joint_count = (uint32_t)src->joints_count;
+        if (dst->joint_count == 0 || dst->joint_count > PB_GLTF_SKIN_JOINTS_MAX) {
+            return false;
+        }
+
+        dst->joint_nodes = calloc(dst->joint_count, sizeof(*dst->joint_nodes));
+        dst->inverse_bind = calloc(dst->joint_count, sizeof(*dst->inverse_bind));
+        if (!dst->joint_nodes || !dst->inverse_bind) {
+            return false;
+        }
+
+        for (uint32_t j = 0; j < dst->joint_count; ++j) {
+            if (!src->joints[j]) {
+                return false;
+            }
+            const cgltf_size joint_index = cgltf_node_index(data, src->joints[j]);
+            if (joint_index >= data->nodes_count) {
+                return false;
+            }
+            dst->joint_nodes[j] = (uint32_t)joint_index;
+
+            if (src->inverse_bind_matrices) {
+                if (!cgltf_accessor_read_float(src->inverse_bind_matrices, j, dst->inverse_bind[j][0], 16)) {
+                    return false;
+                }
+            } else {
+                for (int r = 0; r < 4; ++r) {
+                    for (int c = 0; c < 4; ++c) {
+                        dst->inverse_bind[j][r][c] = r == c ? 1.0f : 0.0f;
+                    }
+                }
+            }
+        }
+    }
+
+    pb_log_info("Loaded glTF skin data: %u skins", scene->skin_count);
+    return true;
+}
 
 static bool copy_accessor_floats(
     const cgltf_accessor *accessor,
@@ -463,6 +528,10 @@ bool pb_gltf_scene_load_nodes_and_animations(const cgltf_data *data, pb_gltf_sce
         }
     }
 
+    if (!load_skins(data, scene)) {
+        return false;
+    }
+
     pb_log_info(
         "Loaded glTF animation data: %u nodes, %u clips",
         scene->node_count,
@@ -493,6 +562,93 @@ void pb_gltf_scene_free_nodes_and_animations(pb_gltf_scene *scene)
     free(scene->nodes);
     scene->nodes = NULL;
     scene->node_count = 0;
+
+    for (uint32_t s = 0; s < scene->skin_count; ++s) {
+        free(scene->skins[s].joint_nodes);
+        free(scene->skins[s].inverse_bind);
+    }
+    free(scene->skins);
+    scene->skins = NULL;
+    scene->skin_count = 0;
+
+    free(scene->skin_palette);
+    scene->skin_palette = NULL;
+    scene->skin_palette_bytes = 0;
+}
+
+bool pb_gltf_scene_init_skin_resources(pb_gltf_scene *scene)
+{
+    if (!scene || !scene->context) {
+        return false;
+    }
+
+    const size_t block_bytes = PB_GLTF_SKIN_JOINTS_MAX * sizeof(pb_mat4);
+    scene->skin_palette_bytes = scene->draw_count > 0 ? (size_t)scene->draw_count * block_bytes : block_bytes;
+    scene->skin_palette = calloc(1, scene->skin_palette_bytes);
+    if (!scene->skin_palette) {
+        return false;
+    }
+
+    pb_rhi_buffer_desc desc = {
+        .size = scene->skin_palette_bytes,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
+    };
+
+    if (!pb_rhi_buffer_create(scene->context, &desc, &scene->skin_palette_buffer)) {
+        free(scene->skin_palette);
+        scene->skin_palette = NULL;
+        scene->skin_palette_bytes = 0;
+        return false;
+    }
+
+    pb_gltf_scene_update_skin_palettes(scene);
+    return true;
+}
+
+void pb_gltf_scene_update_skin_palettes(pb_gltf_scene *scene)
+{
+    if (!scene || !scene->skin_palette || !scene->draws) {
+        return;
+    }
+
+    const size_t block_floats = PB_GLTF_SKIN_JOINTS_MAX * 16;
+    for (uint32_t d = 0; d < scene->draw_count; ++d) {
+        pb_gltf_draw *draw = &scene->draws[d];
+        float *palette_block = scene->skin_palette + (size_t)d * block_floats;
+
+        if (draw->skin_index >= scene->skin_count) {
+            continue;
+        }
+
+        const pb_gltf_skin *skin = &scene->skins[draw->skin_index];
+        alignas(16) float inv_mesh[4][4];
+        alignas(16) float joint_world[4][4];
+        alignas(16) float joint_mesh[4][4];
+
+        mat4_invert(draw->world, inv_mesh);
+
+        for (uint32_t j = 0; j < skin->joint_count; ++j) {
+            const uint32_t joint_node = skin->joint_nodes[j];
+            if (joint_node >= scene->node_count) {
+                continue;
+            }
+
+            memcpy(joint_world, scene->nodes[joint_node].world, sizeof(joint_world));
+            pb_mat4_mul(inv_mesh, joint_world, joint_mesh);
+            pb_mat4_mul(joint_mesh, skin->inverse_bind[j], joint_mesh);
+
+            memcpy(palette_block + (size_t)j * 16, joint_mesh, sizeof(joint_mesh));
+        }
+    }
+
+    if (scene->skin_palette_buffer.size > 0) {
+        pb_rhi_buffer_upload(
+            scene->context,
+            &scene->skin_palette_buffer,
+            scene->skin_palette,
+            scene->skin_palette_bytes);
+    }
 }
 
 void pb_gltf_scene_sync_node_transforms(pb_gltf_scene *scene)
@@ -594,5 +750,6 @@ bool pb_gltf_scene_apply_animation(pb_gltf_scene *scene, uint32_t clip_index, fl
 
     pb_gltf_scene_sync_node_transforms(scene);
     pb_gltf_scene_sync_draw_worlds(scene);
+    pb_gltf_scene_update_skin_palettes(scene);
     return true;
 }

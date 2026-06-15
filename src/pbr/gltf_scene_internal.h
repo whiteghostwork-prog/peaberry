@@ -9,6 +9,7 @@
 #include "peaberry/peaberry_gltf.h"
 #include "peaberry/peaberry_math.h"
 #include "rhi/buffer.h"
+#include "rhi/buffer.h"
 #include "rhi/mesh.h"
 #include "rhi/texture.h"
 
@@ -45,10 +46,22 @@ typedef struct pb_gltf_material {
     pb_material_ubo material_data;
 } pb_gltf_material;
 
+enum {
+    PB_GLTF_SKIN_JOINTS_MAX = 128,
+    PB_GLTF_NO_SKIN = UINT32_MAX,
+};
+
+typedef struct pb_gltf_skin {
+    uint32_t *joint_nodes;
+    uint32_t joint_count;
+    alignas(16) pb_mat4 *inverse_bind;
+} pb_gltf_skin;
+
 typedef struct pb_gltf_draw {
     pb_rhi_mesh mesh;
     uint32_t material_index;
     uint32_t node_index;
+    uint32_t skin_index;
     alignas(16) pb_mat4 world;
     float bounds_min[3];
     float bounds_max[3];
@@ -122,6 +135,18 @@ struct pb_gltf_scene {
     uint32_t node_count;
     pb_gltf_animation *animations;
     uint32_t animation_count;
+    pb_gltf_skin *skins;
+    uint32_t skin_count;
+    alignas(16) float *skin_palette;
+    size_t skin_palette_bytes;
+    pb_rhi_buffer skin_palette_buffer;
 };
+
+typedef struct pb_pbr_push_constants {
+    pb_mat4 model;
+    uint32_t skinned;
+    uint32_t palette_base;
+    uint32_t pad[2];
+} pb_pbr_push_constants;
 
 #endif

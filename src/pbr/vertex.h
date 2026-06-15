@@ -13,8 +13,10 @@ typedef struct pb_pbr_vertex {
     float normal[3];
     float uv[2];
     float tangent[4];
+    float joints[4];
+    float weights[4];
 } pb_pbr_vertex;
 
-enum { PB_PBR_VERTEX_STRIDE_FLOATS = 12 };
+enum { PB_PBR_VERTEX_STRIDE_FLOATS = 20 };
 
 #endif

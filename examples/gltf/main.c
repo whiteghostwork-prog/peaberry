@@ -11,6 +11,7 @@
 #include "wsi.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -39,28 +40,43 @@ static void resource_paths(void)
     snprintf(g_frag_spv, sizeof(g_frag_spv), "%s/pbr_forward.frag.spv", PEABERRY_SHADER_DIR);
 }
 
+static void print_usage(const char *prog)
+{
+    fprintf(stderr, "Usage: %s [--stats] [--clip N] <model.gltf|model.glb>\n", prog);
+    fprintf(stderr, "  Example: %s assets/models/test_cube.gltf\n", prog);
+    fprintf(stderr, "  Khronos sample: scripts/download_damaged_helmet.sh\n");
+    fprintf(stderr, "  Rigged sample: scripts/download_rigged_simple.sh\n");
+}
+
 int main(int argc, char **argv)
 {
     bool show_stats = false;
+    int clip_index = 0;
     const char *model_path = NULL;
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--stats") == 0) {
             show_stats = true;
+        } else if (strcmp(argv[i], "--clip") == 0) {
+            if (i + 1 >= argc) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            clip_index = atoi(argv[++i]);
+            if (clip_index < 0) {
+                fprintf(stderr, "Invalid clip index: %d\n", clip_index);
+                return 1;
+            }
         } else if (argv[i][0] != '-' && model_path == NULL) {
             model_path = argv[i];
         } else {
-            fprintf(stderr, "Usage: %s [--stats] <model.gltf|model.glb>\n", argv[0]);
-            fprintf(stderr, "  Example: %s assets/models/test_cube.gltf\n", argv[0]);
-            fprintf(stderr, "  Khronos sample: scripts/download_damaged_helmet.sh\n");
+            print_usage(argv[0]);
             return 1;
         }
     }
 
     if (!model_path) {
-        fprintf(stderr, "Usage: %s [--stats] <model.gltf|model.glb>\n", argv[0]);
-        fprintf(stderr, "  Example: %s assets/models/test_cube.gltf\n", argv[0]);
-        fprintf(stderr, "  Khronos sample: scripts/download_damaged_helmet.sh\n");
+        print_usage(argv[0]);
         return 1;
     }
 
@@ -184,10 +200,13 @@ int main(int argc, char **argv)
         pb_example_camera_update(cam, mouse_dx, mouse_dy, scroll_dy, left_down, dt);
 
         if (pb_gltf_scene_animation_count(scene) > 0) {
-            const float duration = pb_gltf_scene_animation_duration(scene, 0);
-            if (duration > 0.0f) {
-                const float anim_time = fmodf((float)now, duration);
-                pb_gltf_scene_update_animation(scene, 0, anim_time);
+            const uint32_t clip = (uint32_t)clip_index;
+            if (clip < pb_gltf_scene_animation_count(scene)) {
+                const float duration = pb_gltf_scene_animation_duration(scene, clip);
+                if (duration > 0.0f) {
+                    const float anim_time = fmodf((float)now, duration);
+                    pb_gltf_scene_update_animation(scene, clip, anim_time);
+                }
             }
         }
 

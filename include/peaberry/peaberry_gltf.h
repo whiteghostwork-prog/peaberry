@@ -35,6 +35,7 @@ uint32_t pb_gltf_scene_material_count(const pb_gltf_scene *scene);
 uint32_t pb_gltf_scene_animation_count(const pb_gltf_scene *scene);
 float pb_gltf_scene_animation_duration(const pb_gltf_scene *scene, uint32_t clip_index);
 bool pb_gltf_scene_update_animation(pb_gltf_scene *scene, uint32_t clip_index, float time_seconds);
+uint32_t pb_gltf_scene_skin_count(const pb_gltf_scene *scene);
 
 typedef struct pb_gltf_draw_info {
     VkBuffer vertex_buffer;

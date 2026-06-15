@@ -9,6 +9,7 @@
 #include "pbr/draw_sort.h"
 #include "pbr/gltf_scene_internal.h"
 #include "pbr/ibl.h"
+#include "pbr/vertex.h"
 #include "rhi/buffer.h"
 #include "rhi/mesh.h"
 #include "rhi/shader.h"
@@ -17,6 +18,7 @@
 #include "pb_context_internal.h"
 #include "peaberry/peaberry_vk.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -115,11 +117,17 @@ static bool create_descriptor_set_layout(struct pb_pbr_forward_pass *pass)
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
+        {
+            .binding = 10,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 10,
+        .bindingCount = 11,
         .pBindings = bindings,
     };
 
@@ -150,7 +158,8 @@ static void destroy_scene_bindings(struct pb_pbr_forward_pass *pass)
 static bool write_material_descriptor_set(
     struct pb_pbr_forward_pass *pass,
     VkDescriptorSet set,
-    const pb_gltf_material *material)
+    const pb_gltf_material *material,
+    const pb_gltf_scene *scene)
 {
     VkDescriptorBufferInfo frame_info = {
         .buffer = pb_rhi_buffer_handle(&pass->frame_buffer),
@@ -210,6 +219,12 @@ static bool write_material_descriptor_set(
         .sampler = material->emissive.sampler,
         .imageView = material->emissive.view,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
+    VkDescriptorBufferInfo skin_info = {
+        .buffer = pb_rhi_buffer_handle(&scene->skin_palette_buffer),
+        .offset = 0,
+        .range = scene->skin_palette_bytes > 0 ? scene->skin_palette_bytes : sizeof(pb_mat4),
     };
 
     VkWriteDescriptorSet writes[] = {
@@ -293,9 +308,17 @@ static bool write_material_descriptor_set(
             .descriptorCount = 1,
             .pImageInfo = &emissive_info,
         },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = set,
+            .dstBinding = 10,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .pBufferInfo = &skin_info,
+        },
     };
 
-    vkUpdateDescriptorSets(pb_context_device(pass->context), 10, writes, 0, NULL);
+    vkUpdateDescriptorSets(pb_context_device(pass->context), 11, writes, 0, NULL);
     return true;
 }
 
@@ -331,12 +354,16 @@ void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *sce
             .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 8 * material_count,
         },
+        {
+            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = material_count,
+        },
     };
 
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .maxSets = material_count,
-        .poolSizeCount = 2,
+        .poolSizeCount = 3,
         .pPoolSizes = pool_sizes,
     };
 
@@ -363,7 +390,7 @@ void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *sce
             return;
         }
 
-        write_material_descriptor_set(pass, sets[i], &scene->materials[i]);
+        write_material_descriptor_set(pass, sets[i], &scene->materials[i], scene);
     }
 
     pass->descriptor_pool = pool;
@@ -404,22 +431,54 @@ static bool create_pipeline(struct pb_pbr_forward_pass *pass, const pb_pbr_forwa
 
     VkVertexInputBindingDescription binding = {
         .binding = 0,
-        .stride = 12 * sizeof(float),
+        .stride = sizeof(pb_pbr_vertex),
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
 
     VkVertexInputAttributeDescription attributes[] = {
-        { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0 },
-        { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 3 * sizeof(float) },
-        { .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 6 * sizeof(float) },
-        { .location = 3, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 8 * sizeof(float) },
+        {
+            .location = 0,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = offsetof(pb_pbr_vertex, pos),
+        },
+        {
+            .location = 1,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = offsetof(pb_pbr_vertex, normal),
+        },
+        {
+            .location = 2,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32_SFLOAT,
+            .offset = offsetof(pb_pbr_vertex, uv),
+        },
+        {
+            .location = 3,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .offset = offsetof(pb_pbr_vertex, tangent),
+        },
+        {
+            .location = 4,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .offset = offsetof(pb_pbr_vertex, joints),
+        },
+        {
+            .location = 5,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .offset = offsetof(pb_pbr_vertex, weights),
+        },
     };
 
     VkPipelineVertexInputStateCreateInfo vertex_input = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1,
         .pVertexBindingDescriptions = &binding,
-        .vertexAttributeDescriptionCount = 4,
+        .vertexAttributeDescriptionCount = 6,
         .pVertexAttributeDescriptions = attributes,
     };
 
@@ -459,7 +518,7 @@ static bool create_pipeline(struct pb_pbr_forward_pass *pass, const pb_pbr_forwa
     VkPushConstantRange push_range = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
         .offset = 0,
-        .size = sizeof(pb_mat4),
+        .size = sizeof(pb_pbr_push_constants),
     };
 
     VkPipelineLayoutCreateInfo layout_info = {
@@ -585,10 +644,12 @@ static void record_one_draw(
     struct pb_pbr_forward_pass *pass,
     VkCommandBuffer cmd,
     const pb_gltf_scene *scene,
+    uint32_t draw_index,
     const pb_gltf_draw *draw,
     VkPipeline pipeline,
     float time_seconds)
 {
+    (void)scene;
     (void)time_seconds;
 
     if (draw->material_index >= pass->descriptor_set_count || draw->mesh.index_count == 0) {
@@ -612,16 +673,18 @@ static void record_one_draw(
         0,
         NULL);
 
-    pb_mat4 model;
-    memcpy(model, draw->world, sizeof(model));
+    pb_pbr_push_constants push = {0};
+    memcpy(push.model, draw->world, sizeof(push.model));
+    push.skinned = draw->skin_index != PB_GLTF_NO_SKIN ? 1u : 0u;
+    push.palette_base = draw_index * PB_GLTF_SKIN_JOINTS_MAX;
 
     vkCmdPushConstants(
         cmd,
         pass->pipeline_layout,
         VK_SHADER_STAGE_VERTEX_BIT,
         0,
-        sizeof(model),
-        model);
+        sizeof(push),
+        &push);
 
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);
@@ -649,7 +712,7 @@ static void record_sorted_opaque_draws(
             bound_pipeline = pipeline;
         }
 
-        record_one_draw(pass, cmd, scene, draw, pipeline, time_seconds);
+        record_one_draw(pass, cmd, scene, entries[i].draw_index, draw, pipeline, time_seconds);
     }
 }
 
@@ -666,10 +729,24 @@ static void record_sorted_blend_draws(
         const pb_gltf_material *material = &scene->materials[draw->material_index];
 
         if (material->double_sided) {
-            record_one_draw(pass, cmd, scene, draw, pass->pipeline_blend_back, time_seconds);
+            record_one_draw(
+                pass,
+                cmd,
+                scene,
+                entries[i].draw_index,
+                draw,
+                pass->pipeline_blend_back,
+                time_seconds);
         }
 
-        record_one_draw(pass, cmd, scene, draw, pass->pipeline_blend, time_seconds);
+        record_one_draw(
+            pass,
+            cmd,
+            scene,
+            entries[i].draw_index,
+            draw,
+            pass->pipeline_blend,
+            time_seconds);
     }
 }
 

@@ -342,6 +342,43 @@ static bool build_primitive_mesh(
             cgltf_accessor_read_float(tan_attr, i, vertices[i].tangent, 4);
             has_tangent = true;
         }
+
+        vertices[i].joints[0] = 0.0f;
+        vertices[i].joints[1] = 0.0f;
+        vertices[i].joints[2] = 0.0f;
+        vertices[i].joints[3] = 0.0f;
+        vertices[i].weights[0] = 1.0f;
+        vertices[i].weights[1] = 0.0f;
+        vertices[i].weights[2] = 0.0f;
+        vertices[i].weights[3] = 0.0f;
+    }
+
+    const cgltf_accessor *joints_attr = find_attribute(prim, cgltf_attribute_type_joints);
+    const cgltf_accessor *weights_attr = find_attribute(prim, cgltf_attribute_type_weights);
+    if (joints_attr && weights_attr) {
+        for (uint32_t i = 0; i < vertex_count; ++i) {
+            uint32_t joint_values[4] = {0};
+            cgltf_accessor_read_uint(joints_attr, i, joint_values, 4);
+            for (uint32_t j = 0; j < 4; ++j) {
+                vertices[i].joints[j] = (float)joint_values[j];
+            }
+
+            cgltf_accessor_read_float(weights_attr, i, vertices[i].weights, 4);
+            float weight_sum = 0.0f;
+            for (uint32_t j = 0; j < 4; ++j) {
+                weight_sum += vertices[i].weights[j];
+            }
+            if (weight_sum > 1e-8f) {
+                for (uint32_t j = 0; j < 4; ++j) {
+                    vertices[i].weights[j] /= weight_sum;
+                }
+            } else {
+                vertices[i].weights[0] = 1.0f;
+                vertices[i].weights[1] = 0.0f;
+                vertices[i].weights[2] = 0.0f;
+                vertices[i].weights[3] = 0.0f;
+            }
+        }
     }
 
     uint32_t index_count = 0;
@@ -452,6 +489,7 @@ static void traverse_node(
             pb_gltf_draw *draw = &(*draws)[*draw_count];
             memset(draw, 0, sizeof(*draw));
             draw->node_index = node_index;
+            draw->skin_index = node->skin ? (uint32_t)cgltf_skin_index(data, node->skin) : PB_GLTF_NO_SKIN;
             memcpy(draw->world, world, sizeof(draw->world));
 
             if (prim->material) {
@@ -689,6 +727,13 @@ pb_gltf_scene *pb_gltf_scene_create(const pb_gltf_scene_desc *desc)
     pb_gltf_scene_sync_node_transforms(scene);
     pb_gltf_scene_sync_draw_worlds(scene);
 
+    if (!pb_gltf_scene_init_skin_resources(scene)) {
+        pb_log_error("Failed to initialize glTF skin resources: %s", desc->path);
+        pb_gltf_scene_destroy(scene);
+        cgltf_free(data);
+        return NULL;
+    }
+
     cgltf_free(data);
 
     pb_log_info(
@@ -727,6 +772,7 @@ void pb_gltf_scene_destroy(pb_gltf_scene *scene)
 
     free(scene->draws);
     free(scene->materials);
+    pb_rhi_buffer_destroy(context, &scene->skin_palette_buffer);
     pb_gltf_scene_free_nodes_and_animations(scene);
     free(scene);
 }
@@ -749,6 +795,11 @@ uint32_t pb_gltf_scene_material_count(const pb_gltf_scene *scene)
 uint32_t pb_gltf_scene_animation_count(const pb_gltf_scene *scene)
 {
     return scene ? scene->animation_count : 0;
+}
+
+uint32_t pb_gltf_scene_skin_count(const pb_gltf_scene *scene)
+{
+    return scene ? scene->skin_count : 0;
 }
 
 float pb_gltf_scene_animation_duration(const pb_gltf_scene *scene, uint32_t clip_index)

@@ -364,6 +364,53 @@ PB_TEST(test_gltf_animation)
     PB_TEST_PASS();
 }
 
+PB_TEST(test_gltf_skinning)
+{
+    char path[512];
+    const int path_len =
+        snprintf(path, sizeof(path), "%s/models/RiggedSimple.glb", PEABERRY_ASSET_DIR);
+    PB_ASSERT(path_len >= 0 && path_len < (int)sizeof(path));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry gltf skinning test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    pb_gltf_scene *scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    if (!scene) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("RiggedSimple.glb missing or load failed (run scripts/download_rigged_simple.sh)");
+    }
+
+    PB_ASSERT(pb_gltf_scene_skin_count(scene) == 1);
+    PB_ASSERT(pb_gltf_scene_animation_count(scene) >= 1);
+    PB_ASSERT(pb_gltf_scene_draw_count(scene) > 0);
+
+    const float duration = pb_gltf_scene_animation_duration(scene, 0);
+    PB_ASSERT(duration > 0.0f);
+
+    PB_ASSERT(pb_gltf_scene_update_animation(scene, 0, 0.0f));
+    PB_ASSERT(pb_gltf_scene_update_animation(scene, 0, duration * 0.5f));
+    PB_ASSERT(pb_gltf_scene_update_animation(scene, 0, duration));
+
+    pb_gltf_scene_destroy(scene);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
 void pb_run_gltf_tests(void)
 {
     printf("gltf tests\n");
@@ -374,4 +421,5 @@ void pb_run_gltf_tests(void)
     PB_RUN_TEST(test_gltf_hierarchy);
     PB_RUN_TEST(test_gltf_texture_transform);
     PB_RUN_TEST(test_gltf_animation);
+    PB_RUN_TEST(test_gltf_skinning);
 }
