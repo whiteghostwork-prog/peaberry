@@ -10,9 +10,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(PEABERRY_BUILD_EXAMPLES "Build peaberry examples" ON)
+option(PEABERRY_BUILD_EXAMPLES "Build peaberry examples (deprecated: use espresso repo)" OFF)
 option(PEABERRY_BUILD_TESTS "Build and register peaberry tests" ON)
-option(PEABERRY_BUILD_BENCHMARKS "Build peaberry_bench GPU benchmark runner" ON)
+option(PEABERRY_BUILD_BENCHMARKS "Build peaberry_bench GPU benchmark runner (deprecated: use espresso repo)" OFF)
 option(PEABERRY_ENABLE_VALIDATION "Enable Vulkan validation layers" ON)
 
 find_package(Vulkan REQUIRED)
@@ -85,3 +85,36 @@ endif()
 if(PEABERRY_BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)
 endif()
+
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+install(
+    DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/shaders/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/peaberry/shaders
+    FILES_MATCHING PATTERN "*.vert" PATTERN "*.frag"
+)
+
+install(
+    FILES ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CompileGlsl.cmake
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/peaberry/cmake
+)
+
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/PeaberryConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/PeaberryConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Peaberry
+)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/PeaberryConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(
+    FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/PeaberryConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/PeaberryConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Peaberry
+)

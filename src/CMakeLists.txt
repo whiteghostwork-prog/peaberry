@@ -31,7 +31,8 @@ add_dependencies(peaberry peaberry_shaders)
 
 target_include_directories(peaberry
     PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${stb_SOURCE_DIR}
@@ -50,4 +51,24 @@ target_link_libraries(peaberry
         Vulkan::Vulkan
     PRIVATE
         cglm
+)
+
+include(GNUInstallDirs)
+
+install(
+    TARGETS peaberry volk
+    EXPORT PeaberryTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+install(
+    DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../include/peaberry
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(
+    EXPORT PeaberryTargets
+    FILE PeaberryTargets.cmake
+    NAMESPACE Peaberry::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Peaberry
 )
