@@ -21,7 +21,7 @@ function(peaberry_compile_glsl OUTPUT_SPIRV_FILES)
     set(generated_spirv "")
     foreach(source ${ARG_SOURCES})
         get_filename_component(source_name "${source}" NAME)
-        set(output "${CMAKE_BINARY_DIR}/shaders/${source_name}.spv")
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/shaders/${source_name}.spv")
         if(PEABERRY_GLSLC)
             set(compile_cmd "${PEABERRY_GLSLC}" "${source}" -o "${output}")
         else()
@@ -29,7 +29,7 @@ function(peaberry_compile_glsl OUTPUT_SPIRV_FILES)
         endif()
         add_custom_command(
             OUTPUT "${output}"
-            COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/shaders"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders"
             COMMAND ${compile_cmd}
             DEPENDS "${source}"
             COMMENT "Compiling ${source_name} to SPIR-V"
