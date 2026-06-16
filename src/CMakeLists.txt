@@ -21,6 +21,7 @@ add_library(peaberry STATIC
     pbr/ibl.c
     pbr/draw_sort.c
     pbr/pbr_forward_pass.c
+    pbr/shadow_pass.c
     pbr/sphere_pass.c
     load/gltf.c
     load/gltf_animation.c

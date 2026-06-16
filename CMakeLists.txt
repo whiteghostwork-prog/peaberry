@@ -69,6 +69,8 @@ peaberry_compile_glsl(PEABERRY_SHADER_SPIRV
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/equirect_to_cubemap.frag
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/irradiance.frag
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/prefilter.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow_depth.vert
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow_depth.frag
 )
 
 add_subdirectory(src)

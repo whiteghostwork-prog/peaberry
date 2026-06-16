@@ -10,6 +10,7 @@ add_executable(peaberry_tests
     test_gltf_render.c
     test_bench.c
     test_draw_sort.c
+    test_shadow.c
 )
 
 target_include_directories(peaberry_tests

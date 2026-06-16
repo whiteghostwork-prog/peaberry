@@ -21,6 +21,7 @@
 #include "pb_context_internal.h"
 #include "vk/context.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 
 pb_context *pb_context_create(const pb_context_desc *desc)
@@ -88,6 +89,39 @@ bool pb_context_init_headless_device(pb_context *ctx)
     }
 
     return pb_vk_context_init_headless_device(&ctx->vk);
+}
+
+VkSampleCountFlagBits pb_context_choose_msaa_samples(
+    const pb_context *ctx,
+    VkSampleCountFlagBits requested_max)
+{
+    if (!ctx || ctx->vk.physical_device == VK_NULL_HANDLE) {
+        return VK_SAMPLE_COUNT_1_BIT;
+    }
+
+    if (requested_max == 0) {
+        requested_max = VK_SAMPLE_COUNT_1_BIT;
+    }
+
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(ctx->vk.physical_device, &props);
+
+    const VkSampleCountFlags supported = props.limits.framebufferColorSampleCounts &
+        props.limits.framebufferDepthSampleCounts;
+
+    const VkSampleCountFlagBits candidates[] = {
+        VK_SAMPLE_COUNT_4_BIT,
+        VK_SAMPLE_COUNT_2_BIT,
+        VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        if (candidates[i] <= requested_max && (supported & candidates[i])) {
+            return candidates[i];
+        }
+    }
+
+    return VK_SAMPLE_COUNT_1_BIT;
 }
 
 VkInstance pb_context_instance(const pb_context *ctx)

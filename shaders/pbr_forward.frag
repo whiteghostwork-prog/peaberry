@@ -5,6 +5,14 @@ layout(set = 0, binding = 0) uniform FrameData {
     mat4 proj;
     vec3 camera_pos;
     float exposure;
+    mat4 light_view;
+    mat4 light_proj;
+    float shadow_bias;
+    float shadows_enabled;
+    float shadow_bias_slope;
+    float shadow_texel_size;
+    float shadow_debug;
+    float _pad;
 } frame;
 
 layout(set = 0, binding = 1) uniform MaterialLight {
@@ -32,6 +40,7 @@ layout(set = 0, binding = 6) uniform samplerCube u_prefilter;
 layout(set = 0, binding = 7) uniform sampler2D u_brdf_lut;
 layout(set = 0, binding = 8) uniform sampler2D u_occlusion;
 layout(set = 0, binding = 9) uniform sampler2D u_emissive;
+layout(set = 0, binding = 11) uniform sampler2DShadow u_shadow_map;
 
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_normal;
@@ -87,6 +96,39 @@ vec3 aces_tonemap(vec3 color)
     const float d = 0.59;
     const float e = 0.14;
     return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
+}
+
+float calc_shadow(vec3 world_pos, vec3 N, vec3 L)
+{
+    if (frame.shadows_enabled < 0.5) {
+        return 1.0;
+    }
+
+    vec4 light_clip = frame.light_proj * frame.light_view * vec4(world_pos, 1.0);
+    vec3 proj_coords = light_clip.xyz / light_clip.w;
+    proj_coords.xy = proj_coords.xy * 0.5 + 0.5;
+
+    if (proj_coords.x < 0.0 || proj_coords.x > 1.0 ||
+        proj_coords.y < 0.0 || proj_coords.y > 1.0 ||
+        proj_coords.z < 0.0 || proj_coords.z > 1.0) {
+        return 1.0;
+    }
+
+    float NdotL = max(dot(N, L), 0.0);
+    float slope_bias = frame.shadow_bias_slope * sqrt(1.0 - NdotL * NdotL) / max(NdotL, 0.0001);
+    float bias = max(frame.shadow_bias * (1.0 - NdotL) + slope_bias, 0.0001);
+    float depth_ref = proj_coords.z - bias;
+
+    float shadow = 0.0;
+    vec2 texel = vec2(frame.shadow_texel_size);
+    for (int x = -1; x <= 1; ++x) {
+        for (int y = -1; y <= 1; ++y) {
+            vec2 offset = vec2(float(x), float(y)) * texel;
+            shadow += texture(u_shadow_map, vec3(proj_coords.xy + offset, depth_ref));
+        }
+    }
+
+    return shadow / 9.0;
 }
 
 vec2 transform_uv(vec2 uv, int slot)
@@ -155,7 +197,8 @@ void main()
     float NdotL = max(dot(N, L), 0.0);
 
     vec3 radiance = material.light_color;
-    vec3 direct = (kD * albedo / PI + specular) * radiance * NdotL;
+    float shadow = calc_shadow(v_world_pos, N, L);
+    vec3 direct = (kD * albedo / PI + specular) * radiance * NdotL * shadow;
 
     vec3 irradiance = texture(u_irradiance, N).rgb;
     vec3 diffuse_ibl = irradiance * albedo;
@@ -175,6 +218,12 @@ void main()
     /* emissive: add unlit contribution */
     vec3 emissive = texture(u_emissive, uv_emissive).rgb * material.emissive_factor;
     color += emissive;
+
+    if (frame.shadow_debug > 0.5) {
+        float shadow_vis = calc_shadow(v_world_pos, N, L);
+        color = vec3(shadow_vis);
+        alpha = 1.0;
+    }
 
     color = aces_tonemap(color * frame.exposure);
     color = pow(color, vec3(1.0 / 2.2));

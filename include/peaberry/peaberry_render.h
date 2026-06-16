@@ -27,6 +27,7 @@ typedef struct pb_triangle_pass_desc {
     VkRenderPass render_pass;
     const char *vert_spv_path;
     const char *frag_spv_path;
+    VkSampleCountFlagBits rasterization_samples;
 } pb_triangle_pass_desc;
 
 pb_triangle_pass *pb_triangle_pass_create(const pb_triangle_pass_desc *desc);
@@ -46,6 +47,7 @@ typedef struct pb_quad_pass_desc {
     const char *vert_spv_path;
     const char *frag_spv_path;
     const char *texture_path;
+    VkSampleCountFlagBits rasterization_samples;
 } pb_quad_pass_desc;
 
 pb_quad_pass *pb_quad_pass_create(const pb_quad_pass_desc *desc);
@@ -73,6 +75,7 @@ typedef struct pb_sphere_pass_desc {
     float metallic_factor;
     float roughness_factor;
     float exposure;
+    VkSampleCountFlagBits rasterization_samples;
 } pb_sphere_pass_desc;
 
 pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc);

@@ -109,6 +109,7 @@ typedef struct pb_pbr_forward_pass_desc {
     const char *ibl_equirect_hdr_path;
     float exposure;
     pb_gltf_scene *scene;
+    VkSampleCountFlagBits rasterization_samples;
 } pb_pbr_forward_pass_desc;
 
 pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *desc);
@@ -123,6 +124,21 @@ void pb_pbr_forward_pass_set_camera(
     const pb_mat4 view,
     const pb_mat4 proj,
     const float camera_pos[3]);
+
+void pb_pbr_forward_pass_set_shadows_enabled(pb_pbr_forward_pass *pass, bool enabled);
+
+void pb_pbr_forward_pass_set_shadow_tuning(
+    pb_pbr_forward_pass *pass,
+    float constant_bias,
+    float slope_bias);
+
+void pb_pbr_forward_pass_set_shadow_debug(pb_pbr_forward_pass *pass, bool enabled);
+
+void pb_pbr_forward_pass_record_shadow_map(
+    pb_pbr_forward_pass *pass,
+    VkCommandBuffer cmd,
+    VkExtent2D extent,
+    const pb_gltf_scene *scene);
 
 void pb_pbr_forward_pass_record(
     pb_pbr_forward_pass *pass,

@@ -252,6 +252,8 @@ static void record_gltf_frame(VkCommandBuffer cmd, void *user_data)
     gltf_render_record_ctx *ctx = user_data;
     gltf_render_fixture *fx = ctx->fixture;
 
+    pb_pbr_forward_pass_record_shadow_map(fx->pass, cmd, fx->extent, fx->scene);
+
     VkClearValue clears[2] = {
         { .color = { { 0.02f, 0.02f, 0.025f, 1.0f } } },
         { .depthStencil = { 1.0f, 0 } },

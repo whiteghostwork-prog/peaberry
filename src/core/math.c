@@ -51,6 +51,24 @@ void pb_mat4_rotate_y(pb_mat4 m, float angle_rad, pb_mat4 out)
     glm_rotate_y(temp, angle_rad, out);
 }
 
+void pb_mat4_ortho(
+    pb_mat4 m,
+    float left,
+    float right,
+    float bottom,
+    float top,
+    float near_z,
+    float far_z)
+{
+    glm_ortho(left, right, bottom, top, near_z, far_z, m);
+}
+
+void pb_vec3_normalize(pb_vec3 v, pb_vec3 out)
+{
+    glm_vec3_copy(v, out);
+    glm_vec3_normalize(out);
+}
+
 float pb_radians(float degrees)
 {
     return glm_rad(degrees);

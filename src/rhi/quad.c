@@ -277,7 +277,8 @@ static bool create_pipeline(struct pb_quad_pass *pass, const pb_quad_pass_desc *
 
     VkPipelineMultisampleStateCreateInfo multisample = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .rasterizationSamples = desc->rasterization_samples != 0 ? desc->rasterization_samples
+                                                                 : VK_SAMPLE_COUNT_1_BIT,
     };
 
     VkPipelineDepthStencilStateCreateInfo depth_stencil = {

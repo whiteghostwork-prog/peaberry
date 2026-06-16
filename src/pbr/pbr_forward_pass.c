@@ -9,6 +9,7 @@
 #include "pbr/draw_sort.h"
 #include "pbr/gltf_scene_internal.h"
 #include "pbr/ibl.h"
+#include "pbr/shadow_pass.h"
 #include "pbr/vertex.h"
 #include "rhi/buffer.h"
 #include "rhi/mesh.h"
@@ -19,6 +20,7 @@
 #include "peaberry/peaberry_vk.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,6 +29,14 @@ typedef struct pb_frame_ubo {
     pb_mat4 proj;
     float camera_pos[3];
     float exposure;
+    pb_mat4 light_view;
+    pb_mat4 light_proj;
+    float shadow_bias;
+    float shadows_enabled;
+    float shadow_bias_slope;
+    float shadow_texel_size;
+    float shadow_debug;
+    float _pad;
 } pb_frame_ubo;
 
 struct pb_pbr_forward_pass {
@@ -43,10 +53,15 @@ struct pb_pbr_forward_pass {
     pb_rhi_buffer frame_buffer;
     pb_ibl_environment ibl;
     pb_gltf_scene *scene;
+    pb_shadow_pass *shadow;
     VkShaderModule vert_module;
     VkShaderModule frag_module;
     float exposure;
     float prefilter_max_lod;
+    float shadow_bias;
+    bool shadows_enabled;
+    float shadow_bias_slope;
+    bool shadow_debug;
     /* external camera (set by pb_pbr_forward_pass_set_camera) */
     bool has_external_camera;
     pb_mat4 external_view;
@@ -123,11 +138,17 @@ static bool create_descriptor_set_layout(struct pb_pbr_forward_pass *pass)
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
         },
+        {
+            .binding = 11,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 11,
+        .bindingCount = 12,
         .pBindings = bindings,
     };
 
@@ -220,6 +241,13 @@ static bool write_material_descriptor_set(
         .imageView = material->emissive.view,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
+
+    VkDescriptorImageInfo shadow_info = {0};
+    if (pass->shadow) {
+        shadow_info.sampler = pb_shadow_pass_sampler(pass->shadow);
+        shadow_info.imageView = pb_shadow_pass_depth_view(pass->shadow);
+        shadow_info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    }
 
     VkDescriptorBufferInfo skin_info = {
         .buffer = pb_rhi_buffer_handle(&scene->skin_palette_buffer),
@@ -316,9 +344,17 @@ static bool write_material_descriptor_set(
             .descriptorCount = 1,
             .pBufferInfo = &skin_info,
         },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = set,
+            .dstBinding = 11,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &shadow_info,
+        },
     };
 
-    vkUpdateDescriptorSets(pb_context_device(pass->context), 11, writes, 0, NULL);
+    vkUpdateDescriptorSets(pb_context_device(pass->context), 12, writes, 0, NULL);
     return true;
 }
 
@@ -352,7 +388,7 @@ void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *sce
         },
         {
             .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 8 * material_count,
+            .descriptorCount = 9 * material_count,
         },
         {
             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -512,7 +548,8 @@ static bool create_pipeline(struct pb_pbr_forward_pass *pass, const pb_pbr_forwa
 
     VkPipelineMultisampleStateCreateInfo multisample = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .rasterizationSamples = desc->rasterization_samples != 0 ? desc->rasterization_samples
+                                                                 : VK_SAMPLE_COUNT_1_BIT,
     };
 
     VkPushConstantRange push_range = {
@@ -599,7 +636,55 @@ static bool create_pipeline(struct pb_pbr_forward_pass *pass, const pb_pbr_forwa
     return true;
 }
 
-static pb_frame_ubo build_frame_ubo(struct pb_pbr_forward_pass *pass, VkExtent2D extent)
+static bool derive_shadow_spv_path(const char *forward_vert, char *out, size_t out_size, const char *leaf)
+{
+    const char *slash = strrchr(forward_vert, '/');
+    if (!slash) {
+        return false;
+    }
+
+    const size_t prefix_len = (size_t)(slash - forward_vert) + 1;
+    const int written = snprintf(out, out_size, "%.*s%s", (int)prefix_len, forward_vert, leaf);
+    return written > 0 && (size_t)written < out_size;
+}
+
+static void fill_shadow_frame_fields(
+    struct pb_pbr_forward_pass *pass,
+    const pb_gltf_scene *scene,
+    pb_frame_ubo *frame)
+{
+    pb_mat4_identity(frame->light_view);
+    pb_mat4_identity(frame->light_proj);
+    frame->shadow_bias = pass->shadow_bias;
+    frame->shadows_enabled = 0.0f;
+    frame->shadow_bias_slope = pass->shadow_bias_slope;
+    frame->shadow_texel_size = 1.0f / (float)PB_SHADOW_MAP_SIZE;
+    frame->shadow_debug = pass->shadow_debug ? 1.0f : 0.0f;
+
+    if (!pass->shadows_enabled || !pass->shadow || !scene || scene->material_count == 0) {
+        return;
+    }
+
+    float bounds_min[3];
+    float bounds_max[3];
+    pb_shadow_scene_bounds(scene, bounds_min, bounds_max);
+
+    float light_dir[3];
+    memcpy(light_dir, scene->materials[0].material_data.light_dir, sizeof(light_dir));
+
+    pb_shadow_light_matrices_fit_aabb(
+        light_dir,
+        bounds_min,
+        bounds_max,
+        frame->light_view,
+        frame->light_proj);
+    frame->shadows_enabled = 1.0f;
+}
+
+static pb_frame_ubo build_frame_ubo(
+    struct pb_pbr_forward_pass *pass,
+    VkExtent2D extent,
+    const pb_gltf_scene *scene)
 {
     pb_frame_ubo frame = {0};
 
@@ -624,12 +709,16 @@ static pb_frame_ubo build_frame_ubo(struct pb_pbr_forward_pass *pass, VkExtent2D
     }
 
     frame.exposure = pass->exposure;
+    fill_shadow_frame_fields(pass, scene, &frame);
     return frame;
 }
 
-static void update_frame_uniforms(struct pb_pbr_forward_pass *pass, VkExtent2D extent)
+static void update_frame_uniforms(
+    struct pb_pbr_forward_pass *pass,
+    VkExtent2D extent,
+    const pb_gltf_scene *scene)
 {
-    const pb_frame_ubo frame = build_frame_ubo(pass, extent);
+    const pb_frame_ubo frame = build_frame_ubo(pass, extent, scene);
     pb_rhi_buffer_upload(pass->context, &pass->frame_buffer, &frame, sizeof(frame));
 }
 
@@ -770,6 +859,10 @@ pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *
 
     pass->context = desc->context;
     pass->exposure = desc->exposure > 0.0f ? desc->exposure : 1.0f;
+    pass->shadow_bias = 0.002f;
+    pass->shadow_bias_slope = 0.003f;
+    pass->shadows_enabled = true;
+    pass->shadow_debug = false;
 
     pb_rhi_buffer_desc frame_desc = {
         .size = sizeof(pb_frame_ubo),
@@ -788,6 +881,24 @@ pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *
         !create_pipeline(pass, desc)) {
         pb_pbr_forward_pass_destroy(pass);
         return NULL;
+    }
+
+    char shadow_vert_spv[512];
+    char shadow_frag_spv[512];
+    if (derive_shadow_spv_path(desc->vert_spv_path, shadow_vert_spv, sizeof(shadow_vert_spv), "shadow_depth.vert.spv") &&
+        derive_shadow_spv_path(desc->vert_spv_path, shadow_frag_spv, sizeof(shadow_frag_spv), "shadow_depth.frag.spv")) {
+        if (!pb_shadow_pass_create(
+                &(pb_shadow_pass_desc){
+                    .context = pass->context,
+                    .pipeline_layout = pass->pipeline_layout,
+                    .vert_spv_path = shadow_vert_spv,
+                    .frag_spv_path = shadow_frag_spv,
+                },
+                &pass->shadow)) {
+            pb_log_error("Failed to create directional shadow pass");
+            pb_pbr_forward_pass_destroy(pass);
+            return NULL;
+        }
     }
 
     pass->prefilter_max_lod = pass->ibl.prefilter_max_lod;
@@ -836,6 +947,10 @@ void pb_pbr_forward_pass_destroy(pb_pbr_forward_pass *pass)
         }
         pb_rhi_buffer_destroy(pass->context, &pass->frame_buffer);
         pb_ibl_environment_destroy(pass->context, &pass->ibl);
+        if (pass->shadow) {
+            pb_shadow_pass_destroy(pass->shadow);
+            pass->shadow = NULL;
+        }
         if (pass->vert_module) {
             vkDestroyShaderModule(device, pass->vert_module, NULL);
         }
@@ -865,6 +980,64 @@ void pb_pbr_forward_pass_set_camera(
     pass->external_camera_pos[2] = camera_pos[2];
 }
 
+void pb_pbr_forward_pass_set_shadows_enabled(pb_pbr_forward_pass *pass, bool enabled)
+{
+    if (!pass) {
+        return;
+    }
+
+    pass->shadows_enabled = enabled;
+}
+
+void pb_pbr_forward_pass_set_shadow_tuning(
+    pb_pbr_forward_pass *pass,
+    float constant_bias,
+    float slope_bias)
+{
+    if (!pass) {
+        return;
+    }
+
+    pass->shadow_bias = constant_bias;
+    pass->shadow_bias_slope = slope_bias;
+}
+
+void pb_pbr_forward_pass_set_shadow_debug(pb_pbr_forward_pass *pass, bool enabled)
+{
+    if (!pass) {
+        return;
+    }
+
+    pass->shadow_debug = enabled;
+}
+
+void pb_pbr_forward_pass_record_shadow_map(
+    pb_pbr_forward_pass *pass,
+    VkCommandBuffer cmd,
+    VkExtent2D extent,
+    const pb_gltf_scene *scene)
+{
+    if (!pass || !pass->shadow || !pass->shadows_enabled || !scene || !cmd) {
+        return;
+    }
+
+    if (scene != pass->scene) {
+        pb_pbr_forward_pass_set_scene(pass, (pb_gltf_scene *)scene);
+    }
+
+    if (!pb_pbr_forward_pass_scene_is_bound(pass) || scene != pass->scene) {
+        return;
+    }
+
+    update_frame_uniforms(pass, extent, scene);
+    pb_shadow_pass_record(
+        pass->shadow,
+        cmd,
+        scene,
+        pass->descriptor_sets,
+        pass->descriptor_set_count);
+}
+
 void pb_pbr_forward_pass_record(
     pb_pbr_forward_pass *pass,
     VkCommandBuffer cmd,
@@ -884,7 +1057,7 @@ void pb_pbr_forward_pass_record(
         return;
     }
 
-    update_frame_uniforms(pass, extent);
+    update_frame_uniforms(pass, extent, scene);
 
     for (uint32_t i = 0; i < scene->material_count; ++i) {
         pb_rhi_buffer_upload(
@@ -894,7 +1067,7 @@ void pb_pbr_forward_pass_record(
             sizeof(scene->materials[i].material_data));
     }
 
-    const pb_frame_ubo frame = build_frame_ubo(pass, extent);
+    const pb_frame_ubo frame = build_frame_ubo(pass, extent, scene);
     const uint32_t draw_count = scene->draw_count;
     pb_draw_sort_entry *opaque_entries = NULL;
     pb_draw_sort_entry *blend_entries = NULL;

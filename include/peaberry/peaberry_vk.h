@@ -34,4 +34,8 @@ uint32_t pb_context_present_queue_family(const pb_context *ctx);
 bool pb_context_device_ready(const pb_context *ctx);
 void pb_context_wait_device_idle(pb_context *ctx);
 
+VkSampleCountFlagBits pb_context_choose_msaa_samples(
+    const pb_context *ctx,
+    VkSampleCountFlagBits requested_max);
+
 #endif

@@ -18,6 +18,7 @@
 
 #include "peaberry/peaberry_math.h"
 #include "pbr/ibl.h"
+#include "rhi/alloc.h"
 #include "rhi/buffer.h"
 #include "rhi/mesh.h"
 #include "rhi/texture.h"
@@ -35,6 +36,14 @@ typedef struct pb_frame_ubo {
     pb_mat4 proj;
     float camera_pos[3];
     float exposure;
+    pb_mat4 light_view;
+    pb_mat4 light_proj;
+    float shadow_bias;
+    float shadows_enabled;
+    float shadow_bias_slope;
+    float shadow_texel_size;
+    float shadow_debug;
+    float _pad;
 } pb_frame_ubo;
 
 typedef struct pb_material_ubo {
@@ -63,6 +72,10 @@ struct pb_sphere_pass {
     pb_rhi_texture normal_texture;
     pb_rhi_texture occlusion_texture;
     pb_rhi_texture emissive_texture;
+    VkImage shadow_fallback_image;
+    VkDeviceMemory shadow_fallback_memory;
+    VkImageView shadow_fallback_view;
+    VkSampler shadow_fallback_sampler;
     pb_ibl_environment ibl;
     pb_rhi_mesh mesh;
     VkShaderModule vert_module;
@@ -153,16 +166,100 @@ static bool create_descriptor_set_layout(struct pb_sphere_pass *pass)
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
+        {
+            .binding = 11,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 10,
+        .bindingCount = 11,
         .pBindings = bindings,
     };
 
     VkDevice device = pb_context_device(pass->context);
     return vkCreateDescriptorSetLayout(device, &layout_info, NULL, &pass->descriptor_set_layout) == VK_SUCCESS;
+}
+
+static bool create_shadow_fallback(struct pb_sphere_pass *pass)
+{
+    VkDevice device = pb_context_device(pass->context);
+    const pb_vk_context *vk = &pass->context->vk;
+
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_D32_SFLOAT,
+        .extent = { 1, 1, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+
+    if (vkCreateImage(device, &image_info, NULL, &pass->shadow_fallback_image) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkMemoryRequirements mem_reqs;
+    vkGetImageMemoryRequirements(device, pass->shadow_fallback_image, &mem_reqs);
+
+    const uint32_t mem_type = pb_rhi_find_memory_type(
+        vk,
+        mem_reqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mem_type == UINT32_MAX) {
+        return false;
+    }
+
+    VkMemoryAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_reqs.size,
+        .memoryTypeIndex = mem_type,
+    };
+
+    if (vkAllocateMemory(device, &alloc_info, NULL, &pass->shadow_fallback_memory) != VK_SUCCESS) {
+        return false;
+    }
+
+    if (vkBindImageMemory(device, pass->shadow_fallback_image, pass->shadow_fallback_memory, 0) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkImageViewCreateInfo view_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = pass->shadow_fallback_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_D32_SFLOAT,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+        },
+    };
+
+    if (vkCreateImageView(device, &view_info, NULL, &pass->shadow_fallback_view) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkSamplerCreateInfo sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        .compareEnable = VK_TRUE,
+        .compareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+        .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+    };
+
+    return vkCreateSampler(device, &sampler_info, NULL, &pass->shadow_fallback_sampler) == VK_SUCCESS;
 }
 
 static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
@@ -176,7 +273,7 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         },
         {
             .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 8,
+            .descriptorCount = 9,
         },
     };
 
@@ -262,6 +359,12 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
 
+    VkDescriptorImageInfo shadow_info = {
+        .sampler = pass->shadow_fallback_sampler,
+        .imageView = pass->shadow_fallback_view,
+        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+    };
+
     VkWriteDescriptorSet writes[] = {
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -343,9 +446,17 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
             .descriptorCount = 1,
             .pImageInfo = &emissive_info,
         },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
+            .dstBinding = 11,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &shadow_info,
+        },
     };
 
-    vkUpdateDescriptorSets(device, 10, writes, 0, NULL);
+    vkUpdateDescriptorSets(device, 11, writes, 0, NULL);
     return true;
 }
 
@@ -449,7 +560,8 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
 
     VkPipelineMultisampleStateCreateInfo multisample = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .rasterizationSamples = desc->rasterization_samples != 0 ? desc->rasterization_samples
+                                                                 : VK_SAMPLE_COUNT_1_BIT,
     };
 
     VkPipelineDepthStencilStateCreateInfo depth_stencil = {
@@ -533,6 +645,7 @@ static void update_uniforms(struct pb_sphere_pass *pass, VkExtent2D extent, floa
     frame.camera_pos[1] = eye[1];
     frame.camera_pos[2] = eye[2];
     frame.exposure = pass->exposure;
+    frame.shadows_enabled = 0.0f;
 
     pb_rhi_buffer_upload(pass->context, &pass->frame_buffer, &frame, sizeof(frame));
     pb_rhi_buffer_upload(pass->context, &pass->material_buffer, &pass->material, sizeof(pass->material));
@@ -601,6 +714,7 @@ pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
                 .shader_dir = desc->ibl_shader_dir,
             },
             &pass->ibl) ||
+        !create_shadow_fallback(pass) ||
         !create_descriptor_pool_and_set(pass) ||
         !pb_rhi_mesh_create_uv_sphere(pass->context, &mesh_desc, &pass->mesh) ||
         !create_pipeline(pass, desc)) {
@@ -644,6 +758,18 @@ void pb_sphere_pass_destroy(pb_sphere_pass *pass)
         pb_rhi_texture_destroy(pass->context, &pass->normal_texture);
         pb_rhi_texture_destroy(pass->context, &pass->occlusion_texture);
         pb_rhi_texture_destroy(pass->context, &pass->emissive_texture);
+        if (pass->shadow_fallback_sampler) {
+            vkDestroySampler(device, pass->shadow_fallback_sampler, NULL);
+        }
+        if (pass->shadow_fallback_view) {
+            vkDestroyImageView(device, pass->shadow_fallback_view, NULL);
+        }
+        if (pass->shadow_fallback_image) {
+            vkDestroyImage(device, pass->shadow_fallback_image, NULL);
+        }
+        if (pass->shadow_fallback_memory) {
+            vkFreeMemory(device, pass->shadow_fallback_memory, NULL);
+        }
         pb_ibl_environment_destroy(pass->context, &pass->ibl);
         pb_rhi_mesh_destroy(pass->context, &pass->mesh);
         if (pass->vert_module) {

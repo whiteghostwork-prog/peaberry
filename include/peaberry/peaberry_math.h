@@ -29,6 +29,16 @@ void pb_mat4_look_at(
     const pb_vec3 center,
     const pb_vec3 up);
 void pb_mat4_rotate_y(pb_mat4 m, float angle_rad, pb_mat4 out);
+void pb_mat4_ortho(
+    pb_mat4 m,
+    float left,
+    float right,
+    float bottom,
+    float top,
+    float near_z,
+    float far_z);
+
+void pb_vec3_normalize(pb_vec3 v, pb_vec3 out);
 
 float pb_radians(float degrees);
 

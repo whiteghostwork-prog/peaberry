@@ -44,6 +44,7 @@ PB_TEST(test_headless_device)
     }
 
     PB_ASSERT(pb_context_device_ready(ctx));
+    PB_ASSERT(pb_context_choose_msaa_samples(ctx, VK_SAMPLE_COUNT_4_BIT) >= VK_SAMPLE_COUNT_1_BIT);
     pb_context_destroy(ctx);
     PB_TEST_PASS();
 }
