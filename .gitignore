@@ -17,6 +17,3 @@ CPackConfig.cmake
 CPackSourceConfig.cmake
 _deps/
 Makefile
-
-# Downloaded sample models (see scripts/download_damaged_helmet.sh)
-assets/models/DamagedHelmet.glb

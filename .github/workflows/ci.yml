@@ -16,6 +16,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout espresso (test assets)
+        uses: actions/checkout@v4
+        with:
+          repository: whiteghostwork-prog/espresso
+          path: espresso
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -40,7 +46,8 @@ jobs:
             -DPEABERRY_BUILD_EXAMPLES=OFF \
             -DPEABERRY_BUILD_BENCHMARKS=OFF \
             -DPEABERRY_BUILD_TESTS=ON \
-            -DPEABERRY_ENABLE_VALIDATION=OFF
+            -DPEABERRY_ENABLE_VALIDATION=OFF \
+            -DPEABERRY_ASSET_DIR="${{ github.workspace }}/espresso/assets"
 
       - name: Build
         run: cmake --build build --parallel

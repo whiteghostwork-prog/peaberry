@@ -134,6 +134,10 @@ void pb_pbr_forward_pass_set_shadow_tuning(
 
 void pb_pbr_forward_pass_set_shadow_debug(pb_pbr_forward_pass *pass, bool enabled);
 
+void pb_pbr_forward_pass_set_frustum_culling_enabled(pb_pbr_forward_pass *pass, bool enabled);
+
+uint32_t pb_pbr_forward_pass_last_visible_draw_count(const pb_pbr_forward_pass *pass);
+
 void pb_pbr_forward_pass_record_shadow_map(
     pb_pbr_forward_pass *pass,
     VkCommandBuffer cmd,

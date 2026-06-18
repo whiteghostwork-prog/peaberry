@@ -15,6 +15,10 @@ option(PEABERRY_BUILD_TESTS "Build and register peaberry tests" ON)
 option(PEABERRY_BUILD_BENCHMARKS "Build peaberry_bench GPU benchmark runner (deprecated: use espresso repo)" OFF)
 option(PEABERRY_ENABLE_VALIDATION "Enable Vulkan validation layers" ON)
 
+# Headless tests load glTF fixtures and sphere maps from espresso (Phase 10.7).
+set(PEABERRY_ASSET_DIR "" CACHE PATH
+    "Textures and glTF test models (default: ../espresso/assets when present)")
+
 find_package(Vulkan REQUIRED)
 
 include(FetchContent)

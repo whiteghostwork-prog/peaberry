@@ -7,6 +7,7 @@
 
 #include "peaberry/peaberry_math.h"
 #include "pbr/draw_sort.h"
+#include "pbr/frustum_cull.h"
 #include "pbr/gltf_scene_internal.h"
 #include "pbr/ibl.h"
 #include "pbr/shadow_pass.h"
@@ -62,6 +63,8 @@ struct pb_pbr_forward_pass {
     bool shadows_enabled;
     float shadow_bias_slope;
     bool shadow_debug;
+    bool frustum_culling_enabled;
+    uint32_t last_visible_draw_count;
     /* external camera (set by pb_pbr_forward_pass_set_camera) */
     bool has_external_camera;
     pb_mat4 external_view;
@@ -863,6 +866,8 @@ pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *
     pass->shadow_bias_slope = 0.003f;
     pass->shadows_enabled = true;
     pass->shadow_debug = false;
+    pass->frustum_culling_enabled = true;
+    pass->last_visible_draw_count = 0;
 
     pb_rhi_buffer_desc frame_desc = {
         .size = sizeof(pb_frame_ubo),
@@ -1011,6 +1016,20 @@ void pb_pbr_forward_pass_set_shadow_debug(pb_pbr_forward_pass *pass, bool enable
     pass->shadow_debug = enabled;
 }
 
+void pb_pbr_forward_pass_set_frustum_culling_enabled(pb_pbr_forward_pass *pass, bool enabled)
+{
+    if (!pass) {
+        return;
+    }
+
+    pass->frustum_culling_enabled = enabled;
+}
+
+uint32_t pb_pbr_forward_pass_last_visible_draw_count(const pb_pbr_forward_pass *pass)
+{
+    return pass ? pass->last_visible_draw_count : 0;
+}
+
 void pb_pbr_forward_pass_record_shadow_map(
     pb_pbr_forward_pass *pass,
     VkCommandBuffer cmd,
@@ -1073,6 +1092,13 @@ void pb_pbr_forward_pass_record(
     pb_draw_sort_entry *blend_entries = NULL;
     uint32_t opaque_count = 0;
     uint32_t blend_count = 0;
+    uint32_t visible_draw_count = 0;
+
+    pb_frustum frustum = {0};
+    const bool use_frustum_cull = pass->frustum_culling_enabled;
+    if (use_frustum_cull) {
+        pb_frustum_from_view_proj(frame.view, frame.proj, &frustum);
+    }
 
     if (draw_count > 0) {
         opaque_entries = calloc(draw_count, sizeof(*opaque_entries));
@@ -1091,6 +1117,13 @@ void pb_pbr_forward_pass_record(
 
             pb_mat4 model;
             memcpy(model, draw->world, sizeof(model));
+
+            if (use_frustum_cull &&
+                !pb_frustum_intersects_bounds(&frustum, model, draw->bounds_min, draw->bounds_max)) {
+                continue;
+            }
+
+            ++visible_draw_count;
 
             const pb_gltf_material *material = &scene->materials[draw->material_index];
             pb_draw_sort_entry entry = {
@@ -1119,6 +1152,8 @@ void pb_pbr_forward_pass_record(
         pb_draw_sort_stable(opaque_entries, opaque_count, false);
         pb_draw_sort_stable(blend_entries, blend_count, true);
     }
+
+    pass->last_visible_draw_count = visible_draw_count;
 
     VkViewport viewport = {
         .width = (float)extent.width,

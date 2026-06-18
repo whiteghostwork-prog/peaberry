@@ -8,7 +8,7 @@ Peaberry is the **open-source codebase for my research on graphics programming**
 
 It doubles as a **research and learning platform**: readable C for studying real-time graphics, running experiments, and comparing results—not a production game engine.
 
-The project keeps a narrow scope on purpose: a library core with examples, automated tests, and GPU timing tools so work can be reproduced and evaluated.
+The project keeps a narrow scope on purpose: a **library core** with headless tests and GPU timing APIs. Interactive examples, benchmarks, and assets live in the sibling [**espresso**](https://github.com/whiteghostwork-prog/espresso) repo (Phase 10.7 split).
 
 Application summary: [OPEN_SOURCE_PLAN.md](OPEN_SOURCE_PLAN.md)
 
@@ -17,19 +17,18 @@ Application summary: [OPEN_SOURCE_PLAN.md](OPEN_SOURCE_PLAN.md)
 ## Features
 
 - Vulkan RHI (buffers, textures, meshes, shaders)
-- Forward PBR — Cook-Torrance, normal maps, occlusion, emissive, ACES tone mapping
+- Forward PBR — Cook-Torrance, normal maps, occlusion, emissive, directional shadows, ACES tone mapping
 - Image-based lighting — BRDF LUT, irradiance, prefiltered environment
-- glTF 2.0 loading — materials, scenes, transparency, double-sided materials, texture transforms
-- Interactive examples and a glTF viewer
-- GPU benchmarks and frame metrics (CPU/GPU timing, FPS)
+- glTF 2.0 loading — materials, scenes, transparency, double-sided materials, texture transforms, animation, skinning
+- Frustum culling, MSAA hooks in WSI consumers
 - Automated tests (headless Vulkan + render smoke)
 
 ## Plans
 
 Near term:
 
-- Richer glTF content support (tangents, animation, skinning)
-- Scene polish — shadows, MSAA, basic culling
+- Per-frame allocators and draw batching (Phase 11.5–11.6)
+- Benchmark scenarios for shadows and instancing
 
 Longer term (optional):
 
@@ -39,55 +38,40 @@ More detail: [docs/roadmap.md](docs/roadmap.md)
 
 ## Quick start
 
-**Requirements:** Linux, **Vulkan-capable GPU**, **Wayland** for interactive examples ([dependencies](docs/dependencies.md)).
+**Requirements:** Linux, **Vulkan-capable GPU** ([dependencies](docs/dependencies.md)).
 
 ```bash
+# Library + tests (assets come from sibling espresso checkout)
+git clone https://github.com/whiteghostwork-prog/espresso ../espresso
+
 sudo apt install build-essential cmake git pkg-config glslang-tools \
-    libvulkan-dev vulkan-tools vulkan-validationlayers \
-    libwayland-dev wayland-protocols libxkbcommon-dev
+    libvulkan-dev vulkan-tools vulkan-validationlayers
 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-```bash
-./build/examples/peaberry_gltf assets/models/test_cube.gltf
-```
-
-**Controls:** left-drag orbit · scroll or Q/E zoom · Esc quit
-
-## Examples
-
-| Binary | Description |
-|--------|-------------|
-| `peaberry_hello_vk` | Clear-color smoke test |
-| `peaberry_triangle` | Rotating triangle |
-| `peaberry_quad` | Textured quad |
-| `peaberry_sphere` | PBR sphere + IBL |
-| `peaberry_gltf` | glTF viewer |
-| `peaberry_bench` | GPU benchmark runner |
+For the glTF viewer and `peaberry_bench`, build [**espresso**](https://github.com/whiteghostwork-prog/espresso) instead.
 
 ## Layout
 
 ```
 include/peaberry/   Public headers
 src/                core, vk, rhi, pbr, load
-tests/              Unit and GPU tests
-examples/           Sample apps (Wayland WSI in examples/common/)
+tests/              Unit and GPU tests (fixtures in espresso/assets)
 shaders/            GLSL sources
-assets/             Textures and test models
 docs/               Roadmap and notes
 ```
 
 ## Contributing
 
 1. Keep changes small and match existing C style.
-2. Windowing stays in `examples/` — the library has no GLFW dependency.
+2. The library has no windowing dependency — apps live in **espresso**.
 3. Verify: `cmake --build build --target peaberry_tests && ./build/tests/peaberry_tests`
 4. Shaders live in `shaders/`; SPIR-V is built automatically.
 
-CI runs build + tests on every push (`.github/workflows/ci.yml`).
+CI runs build + tests on every push (`.github/workflows/ci.yml`), checking out espresso for test assets.
 
 ## License
 
