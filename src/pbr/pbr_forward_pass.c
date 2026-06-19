@@ -68,12 +68,41 @@ struct pb_pbr_forward_pass {
     bool shadow_debug;
     bool frustum_culling_enabled;
     uint32_t last_visible_draw_count;
+    pb_rhi_buffer instance_buffer;
+    uint32_t instance_capacity;
+    uint32_t instanced_draw_index;
+    uint32_t instanced_count;
     /* external camera (set by pb_pbr_forward_pass_set_camera) */
     bool has_external_camera;
     pb_mat4 external_view;
     pb_mat4 external_proj;
     float external_camera_pos[3];
 };
+
+enum {
+    PB_PBR_INSTANCE_CAPACITY = 4096,
+    PB_PBR_NO_INSTANCED_DRAW = UINT32_MAX,
+};
+
+static bool ensure_instance_buffer(struct pb_pbr_forward_pass *pass)
+{
+    if (pass->instance_buffer.handle != VK_NULL_HANDLE) {
+        return true;
+    }
+
+    pb_rhi_buffer_desc desc = {
+        .size = (VkDeviceSize)PB_PBR_INSTANCE_CAPACITY * sizeof(pb_mat4),
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
+    };
+
+    if (!pb_rhi_buffer_create(pass->context, &desc, &pass->instance_buffer)) {
+        return false;
+    }
+
+    pass->instance_capacity = PB_PBR_INSTANCE_CAPACITY;
+    return true;
+}
 
 static bool create_descriptor_set_layout(struct pb_pbr_forward_pass *pass)
 {
@@ -150,11 +179,17 @@ static bool create_descriptor_set_layout(struct pb_pbr_forward_pass *pass)
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
+        {
+            .binding = 12,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 12,
+        .bindingCount = 13,
         .pBindings = bindings,
     };
 
@@ -261,6 +296,14 @@ static bool write_material_descriptor_set(
         .range = scene->skin_palette_bytes > 0 ? scene->skin_palette_bytes : sizeof(pb_mat4),
     };
 
+    const VkDeviceSize instance_bytes =
+        pass->instance_buffer.size > 0 ? pass->instance_buffer.size : sizeof(pb_mat4);
+    VkDescriptorBufferInfo instance_info = {
+        .buffer = pb_rhi_buffer_handle(&pass->instance_buffer),
+        .offset = 0,
+        .range = instance_bytes,
+    };
+
     VkWriteDescriptorSet writes[] = {
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -358,9 +401,17 @@ static bool write_material_descriptor_set(
             .descriptorCount = 1,
             .pImageInfo = &shadow_info,
         },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = set,
+            .dstBinding = 12,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .pBufferInfo = &instance_info,
+        },
     };
 
-    vkUpdateDescriptorSets(pb_context_device(pass->context), 12, writes, 0, NULL);
+    vkUpdateDescriptorSets(pb_context_device(pass->context), 13, writes, 0, NULL);
     return true;
 }
 
@@ -402,7 +453,7 @@ void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *sce
         },
         {
             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = material_count,
+            .descriptorCount = 2 * material_count,
         },
     };
 
@@ -755,12 +806,12 @@ static void record_one_draw(
     uint32_t draw_index,
     const pb_gltf_draw *draw,
     VkPipeline pipeline,
-    float time_seconds)
+    float time_seconds,
+    uint32_t instance_count)
 {
-    (void)scene;
     (void)time_seconds;
 
-    if (draw->material_index >= pass->descriptor_set_count || draw->mesh.index_count == 0) {
+    if (draw->material_index >= pass->descriptor_set_count || draw->mesh.index_count == 0 || instance_count == 0) {
         return;
     }
 
@@ -785,9 +836,15 @@ static void record_one_draw(
         &frame_dynamic_offset);
 
     pb_pbr_push_constants push = {0};
-    memcpy(push.model, draw->world, sizeof(push.model));
-    push.skinned = draw->skin_index != PB_GLTF_NO_SKIN ? 1u : 0u;
-    push.palette_base = draw_index * PB_GLTF_SKIN_JOINTS_MAX;
+    const bool use_instancing = instance_count > 1;
+    if (use_instancing) {
+        pb_mat4_identity(push.model);
+        push.instanced = 1u;
+    } else {
+        memcpy(push.model, draw->world, sizeof(push.model));
+        push.skinned = draw->skin_index != PB_GLTF_NO_SKIN ? 1u : 0u;
+        push.palette_base = draw_index * PB_GLTF_SKIN_JOINTS_MAX;
+    }
 
     vkCmdPushConstants(
         cmd,
@@ -800,7 +857,7 @@ static void record_one_draw(
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);
     vkCmdBindIndexBuffer(cmd, index_buffer, 0, draw->mesh.index_type);
-    vkCmdDrawIndexed(cmd, draw->mesh.index_count, 1, 0, 0, 0);
+    vkCmdDrawIndexed(cmd, draw->mesh.index_count, instance_count, 0, 0, 0);
 }
 
 static void record_sorted_opaque_draws(
@@ -823,7 +880,7 @@ static void record_sorted_opaque_draws(
             bound_pipeline = pipeline;
         }
 
-        record_one_draw(pass, cmd, scene, entries[i].draw_index, draw, pipeline, time_seconds);
+        record_one_draw(pass, cmd, scene, entries[i].draw_index, draw, pipeline, time_seconds, 1);
     }
 }
 
@@ -847,7 +904,8 @@ static void record_sorted_blend_draws(
                 entries[i].draw_index,
                 draw,
                 pass->pipeline_blend_back,
-                time_seconds);
+                time_seconds,
+                1);
         }
 
         record_one_draw(
@@ -857,7 +915,8 @@ static void record_sorted_blend_draws(
             entries[i].draw_index,
             draw,
             pass->pipeline_blend,
-            time_seconds);
+            time_seconds,
+            1);
     }
 }
 
@@ -887,8 +946,11 @@ pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *
     pass->shadow_debug = false;
     pass->frustum_culling_enabled = true;
     pass->last_visible_draw_count = 0;
+    pass->instanced_draw_index = PB_PBR_NO_INSTANCED_DRAW;
+    pass->instanced_count = 0;
 
     if (!create_descriptor_set_layout(pass) ||
+        !ensure_instance_buffer(pass) ||
         !pb_rhi_ring_buffer_create(
             pass->context,
             sizeof(pb_frame_ubo),
@@ -971,6 +1033,7 @@ void pb_pbr_forward_pass_destroy(pb_pbr_forward_pass *pass)
             vkDestroyDescriptorSetLayout(device, pass->descriptor_set_layout, NULL);
         }
         pb_rhi_ring_buffer_destroy(pass->context, &pass->frame_ubo);
+        pb_rhi_buffer_destroy(pass->context, &pass->instance_buffer);
         pb_ibl_environment_destroy(pass->context, &pass->ibl);
         if (pass->shadow) {
             pb_shadow_pass_destroy(pass->shadow);
@@ -1053,8 +1116,47 @@ uint32_t pb_pbr_forward_pass_last_visible_draw_count(const pb_pbr_forward_pass *
 void pb_pbr_forward_pass_set_frame_slot(pb_pbr_forward_pass *pass, uint32_t slot)
 {
     if (pass) {
-        pass->frame_slot = slot % PB_RHI_FRAMES_IN_FLIGHT;
+        pass->frame_slot = slot % PB_FRAMES_IN_FLIGHT;
     }
+}
+
+void pb_pbr_forward_pass_clear_instancing(pb_pbr_forward_pass *pass)
+{
+    if (!pass) {
+        return;
+    }
+
+    pass->instanced_draw_index = PB_PBR_NO_INSTANCED_DRAW;
+    pass->instanced_count = 0;
+}
+
+bool pb_pbr_forward_pass_set_instanced_draw(
+    pb_pbr_forward_pass *pass,
+    uint32_t draw_index,
+    const pb_mat4 *transforms,
+    uint32_t instance_count)
+{
+    if (!pass || !transforms || instance_count == 0) {
+        return false;
+    }
+
+    if (!ensure_instance_buffer(pass) || instance_count > pass->instance_capacity) {
+        return false;
+    }
+
+    const VkDeviceSize bytes = (VkDeviceSize)instance_count * sizeof(pb_mat4);
+    if (!pb_rhi_buffer_write(&pass->instance_buffer, 0, transforms, bytes)) {
+        return false;
+    }
+
+    pass->instanced_draw_index = draw_index;
+    pass->instanced_count = instance_count;
+    return true;
+}
+
+uint32_t pb_pbr_forward_pass_instanced_count(const pb_pbr_forward_pass *pass)
+{
+    return pass ? pass->instanced_count : 0;
 }
 
 void pb_pbr_forward_pass_record_shadow_map(
@@ -1086,7 +1188,9 @@ void pb_pbr_forward_pass_record_shadow_map(
         pass->descriptor_sets,
         pass->descriptor_set_count,
         &frame_dynamic_offset,
-        1);
+        1,
+        pass->instanced_draw_index,
+        pass->instanced_count);
 }
 
 void pb_pbr_forward_pass_record(
@@ -1124,6 +1228,9 @@ void pb_pbr_forward_pass_record(
         pb_frustum_from_view_proj(frame.view, frame.proj, &frustum);
     }
 
+    const bool has_instanced =
+        pass->instanced_count > 0 && pass->instanced_draw_index < draw_count;
+
     if (draw_count > 0) {
         opaque_entries = calloc(draw_count, sizeof(*opaque_entries));
         blend_entries = calloc(draw_count, sizeof(*blend_entries));
@@ -1133,7 +1240,15 @@ void pb_pbr_forward_pass_record(
             return;
         }
 
+        if (has_instanced) {
+            ++visible_draw_count;
+        }
+
         for (uint32_t d = 0; d < draw_count; ++d) {
+            if (has_instanced && d == pass->instanced_draw_index) {
+                continue;
+            }
+
             const pb_gltf_draw *draw = &scene->draws[d];
             if (draw->material_index >= scene->material_count || draw->mesh.index_count == 0) {
                 continue;
@@ -1191,6 +1306,24 @@ void pb_pbr_forward_pass_record(
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     record_sorted_opaque_draws(pass, cmd, scene, opaque_entries, opaque_count, time_seconds);
+
+    if (has_instanced) {
+        const pb_gltf_draw *draw = &scene->draws[pass->instanced_draw_index];
+        if (draw->material_index < pass->descriptor_set_count && draw->mesh.index_count > 0) {
+            const pb_gltf_material *material = &scene->materials[draw->material_index];
+            const VkPipeline pipeline = select_opaque_pipeline(pass, material);
+            record_one_draw(
+                pass,
+                cmd,
+                scene,
+                pass->instanced_draw_index,
+                draw,
+                pipeline,
+                time_seconds,
+                pass->instanced_count);
+        }
+    }
+
     record_sorted_blend_draws(pass, cmd, scene, blend_entries, blend_count, time_seconds);
 
     free(opaque_entries);

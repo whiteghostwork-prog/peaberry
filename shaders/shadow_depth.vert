@@ -19,10 +19,16 @@ layout(set = 0, binding = 10) readonly buffer SkinPalettes {
     mat4 joint_matrices[];
 } skin_palettes;
 
+layout(set = 0, binding = 12) readonly buffer InstanceMatrices {
+    mat4 models[];
+} instances;
+
 layout(push_constant) uniform Push {
     mat4 model;
     uint skinned;
     uint palette_base;
+    uint instanced;
+    uint instance_base;
 } push;
 
 layout(location = 0) in vec3 in_pos;
@@ -47,7 +53,9 @@ mat4 compute_skin_matrix()
 void main()
 {
     mat4 model = push.model;
-    if (push.skinned != 0u) {
+    if (push.instanced != 0u) {
+        model = instances.models[push.instance_base + gl_InstanceIndex];
+    } else if (push.skinned != 0u) {
         model = push.model * compute_skin_matrix();
     }
 

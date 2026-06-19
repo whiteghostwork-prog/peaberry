@@ -146,7 +146,8 @@ typedef struct pb_pbr_push_constants {
     pb_mat4 model;
     uint32_t skinned;
     uint32_t palette_base;
-    uint32_t pad[2];
+    uint32_t instanced;
+    uint32_t instance_base;
 } pb_pbr_push_constants;
 
 #endif

@@ -146,6 +146,16 @@ uint32_t pb_pbr_forward_pass_last_visible_draw_count(const pb_pbr_forward_pass *
 
 void pb_pbr_forward_pass_set_frame_slot(pb_pbr_forward_pass *pass, uint32_t slot);
 
+void pb_pbr_forward_pass_clear_instancing(pb_pbr_forward_pass *pass);
+
+bool pb_pbr_forward_pass_set_instanced_draw(
+    pb_pbr_forward_pass *pass,
+    uint32_t draw_index,
+    const pb_mat4 *transforms,
+    uint32_t instance_count);
+
+uint32_t pb_pbr_forward_pass_instanced_count(const pb_pbr_forward_pass *pass);
+
 void pb_pbr_forward_pass_record_shadow_map(
     pb_pbr_forward_pass *pass,
     VkCommandBuffer cmd,

@@ -474,9 +474,10 @@ static void record_shadow_draw(
     VkPipeline pipeline,
     VkDescriptorSet descriptor_set,
     const uint32_t *dynamic_offsets,
-    uint32_t dynamic_offset_count)
+    uint32_t dynamic_offset_count,
+    uint32_t instance_count)
 {
-    if (draw->material_index >= scene->material_count || draw->mesh.index_count == 0) {
+    if (draw->material_index >= scene->material_count || draw->mesh.index_count == 0 || instance_count == 0) {
         return;
     }
 
@@ -503,9 +504,15 @@ static void record_shadow_draw(
         dynamic_offsets);
 
     pb_pbr_push_constants push = {0};
-    memcpy(push.model, draw->world, sizeof(push.model));
-    push.skinned = draw->skin_index != PB_GLTF_NO_SKIN ? 1u : 0u;
-    push.palette_base = draw_index * PB_GLTF_SKIN_JOINTS_MAX;
+    const bool use_instancing = instance_count > 1;
+    if (use_instancing) {
+        pb_mat4_identity(push.model);
+        push.instanced = 1u;
+    } else {
+        memcpy(push.model, draw->world, sizeof(push.model));
+        push.skinned = draw->skin_index != PB_GLTF_NO_SKIN ? 1u : 0u;
+        push.palette_base = draw_index * PB_GLTF_SKIN_JOINTS_MAX;
+    }
 
     vkCmdPushConstants(
         cmd,
@@ -518,7 +525,7 @@ static void record_shadow_draw(
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);
     vkCmdBindIndexBuffer(cmd, index_buffer, 0, draw->mesh.index_type);
-    vkCmdDrawIndexed(cmd, draw->mesh.index_count, 1, 0, 0, 0);
+    vkCmdDrawIndexed(cmd, draw->mesh.index_count, instance_count, 0, 0, 0);
 }
 
 void pb_shadow_pass_record(
@@ -528,11 +535,15 @@ void pb_shadow_pass_record(
     VkDescriptorSet *material_descriptor_sets,
     uint32_t descriptor_set_count,
     const uint32_t *dynamic_offsets,
-    uint32_t dynamic_offset_count)
+    uint32_t dynamic_offset_count,
+    uint32_t instanced_draw_index,
+    uint32_t instanced_count)
 {
     if (!pass || !scene || !cmd || !material_descriptor_sets || descriptor_set_count == 0) {
         return;
     }
+
+    const bool has_instanced = instanced_count > 0 && instanced_draw_index < scene->draw_count;
 
     const VkExtent2D extent = { PB_SHADOW_MAP_SIZE, PB_SHADOW_MAP_SIZE };
     VkClearValue clear = { .depthStencil = { 1.0f, 0 } };
@@ -559,6 +570,10 @@ void pb_shadow_pass_record(
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     for (uint32_t d = 0; d < scene->draw_count; ++d) {
+        if (has_instanced && d == instanced_draw_index) {
+            continue;
+        }
+
         const pb_gltf_draw *draw = &scene->draws[d];
         if (draw->material_index >= descriptor_set_count) {
             continue;
@@ -576,7 +591,28 @@ void pb_shadow_pass_record(
             pipeline,
             material_descriptor_sets[draw->material_index],
             dynamic_offsets,
-            dynamic_offset_count);
+            dynamic_offset_count,
+            1);
+    }
+
+    if (has_instanced) {
+        const pb_gltf_draw *draw = &scene->draws[instanced_draw_index];
+        if (draw->material_index < descriptor_set_count) {
+            const pb_gltf_material *material = &scene->materials[draw->material_index];
+            const VkPipeline pipeline =
+                material->double_sided ? pass->pipeline_double_sided : pass->pipeline;
+            record_shadow_draw(
+                pass,
+                cmd,
+                scene,
+                instanced_draw_index,
+                draw,
+                pipeline,
+                material_descriptor_sets[draw->material_index],
+                dynamic_offsets,
+                dynamic_offset_count,
+                instanced_count);
+        }
     }
 
     vkCmdEndRenderPass(cmd);
