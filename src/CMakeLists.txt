@@ -8,6 +8,7 @@ add_library(peaberry STATIC
     vk/context.c
     rhi/alloc.c
     rhi/buffer.c
+    rhi/ring_buffer.c
     rhi/cmd_submit.c
     rhi/cubemap.c
     rhi/mesh.c

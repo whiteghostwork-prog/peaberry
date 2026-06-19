@@ -472,7 +472,9 @@ static void record_shadow_draw(
     uint32_t draw_index,
     const pb_gltf_draw *draw,
     VkPipeline pipeline,
-    VkDescriptorSet descriptor_set)
+    VkDescriptorSet descriptor_set,
+    const uint32_t *dynamic_offsets,
+    uint32_t dynamic_offset_count)
 {
     if (draw->material_index >= scene->material_count || draw->mesh.index_count == 0) {
         return;
@@ -497,8 +499,8 @@ static void record_shadow_draw(
         0,
         1,
         &descriptor_set,
-        0,
-        NULL);
+        dynamic_offset_count,
+        dynamic_offsets);
 
     pb_pbr_push_constants push = {0};
     memcpy(push.model, draw->world, sizeof(push.model));
@@ -524,7 +526,9 @@ void pb_shadow_pass_record(
     VkCommandBuffer cmd,
     const pb_gltf_scene *scene,
     VkDescriptorSet *material_descriptor_sets,
-    uint32_t descriptor_set_count)
+    uint32_t descriptor_set_count,
+    const uint32_t *dynamic_offsets,
+    uint32_t dynamic_offset_count)
 {
     if (!pass || !scene || !cmd || !material_descriptor_sets || descriptor_set_count == 0) {
         return;
@@ -570,7 +574,9 @@ void pb_shadow_pass_record(
             d,
             draw,
             pipeline,
-            material_descriptor_sets[draw->material_index]);
+            material_descriptor_sets[draw->material_index],
+            dynamic_offsets,
+            dynamic_offset_count);
     }
 
     vkCmdEndRenderPass(cmd);

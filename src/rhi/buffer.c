@@ -97,6 +97,19 @@ bool pb_rhi_buffer_create(
         (mem_props & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
         (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
+    if (buffer->host_visible) {
+        void *mapped = NULL;
+        if (vkMapMemory(device, buffer->memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
+            pb_log_error("vkMapMemory failed for host-visible buffer");
+            vkFreeMemory(device, buffer->memory, NULL);
+            vkDestroyBuffer(device, buffer->handle, NULL);
+            buffer_reset(buffer);
+            return false;
+        }
+
+        buffer->mapped = mapped;
+    }
+
     return true;
 }
 
@@ -107,6 +120,9 @@ void pb_rhi_buffer_destroy(pb_context *context, pb_rhi_buffer *buffer)
     }
 
     VkDevice device = context->vk.device;
+    if (buffer->mapped) {
+        vkUnmapMemory(device, buffer->memory);
+    }
     vkDestroyBuffer(device, buffer->handle, NULL);
     if (buffer->memory != VK_NULL_HANDLE) {
         vkFreeMemory(device, buffer->memory, NULL);
@@ -117,6 +133,30 @@ void pb_rhi_buffer_destroy(pb_context *context, pb_rhi_buffer *buffer)
 VkBuffer pb_rhi_buffer_handle(const pb_rhi_buffer *buffer)
 {
     return buffer ? buffer->handle : VK_NULL_HANDLE;
+}
+
+void *pb_rhi_buffer_mapped(const pb_rhi_buffer *buffer)
+{
+    return buffer ? buffer->mapped : NULL;
+}
+
+bool pb_rhi_buffer_write(
+    pb_rhi_buffer *buffer,
+    VkDeviceSize offset,
+    const void *data,
+    VkDeviceSize size)
+{
+    if (!buffer || !data || size == 0 || offset + size > buffer->size) {
+        return false;
+    }
+
+    if (!buffer->host_visible || !buffer->mapped) {
+        pb_log_error("Buffer is not persistently mapped");
+        return false;
+    }
+
+    memcpy((char *)buffer->mapped + offset, data, (size_t)size);
+    return true;
 }
 
 bool pb_rhi_buffer_upload(
@@ -132,6 +172,10 @@ bool pb_rhi_buffer_upload(
     if (!buffer->host_visible) {
         pb_log_error("Buffer is not host-visible; staging upload not implemented");
         return false;
+    }
+
+    if (buffer->mapped) {
+        return pb_rhi_buffer_write(buffer, 0, data, size);
     }
 
     void *mapped = NULL;

@@ -9,7 +9,6 @@
 #include "peaberry/peaberry_gltf.h"
 #include "peaberry/peaberry_math.h"
 #include "rhi/buffer.h"
-#include "rhi/buffer.h"
 #include "rhi/mesh.h"
 #include "rhi/texture.h"
 
@@ -140,6 +139,7 @@ struct pb_gltf_scene {
     alignas(16) float *skin_palette;
     size_t skin_palette_bytes;
     pb_rhi_buffer skin_palette_buffer;
+    uint32_t frame_slot;
 };
 
 typedef struct pb_pbr_push_constants {

@@ -42,7 +42,9 @@ void pb_shadow_pass_record(
     VkCommandBuffer cmd,
     const pb_gltf_scene *scene,
     VkDescriptorSet *material_descriptor_sets,
-    uint32_t descriptor_set_count);
+    uint32_t descriptor_set_count,
+    const uint32_t *dynamic_offsets,
+    uint32_t dynamic_offset_count);
 
 VkImageView pb_shadow_pass_depth_view(const pb_shadow_pass *pass);
 VkSampler pb_shadow_pass_sampler(const pb_shadow_pass *pass);

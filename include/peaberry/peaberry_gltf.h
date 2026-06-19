@@ -12,6 +12,10 @@
 
 #include <stdint.h>
 
+enum {
+    PB_FRAMES_IN_FLIGHT = 2,
+};
+
 typedef struct pb_gltf_scene pb_gltf_scene;
 
 enum {
@@ -36,6 +40,8 @@ uint32_t pb_gltf_scene_animation_count(const pb_gltf_scene *scene);
 float pb_gltf_scene_animation_duration(const pb_gltf_scene *scene, uint32_t clip_index);
 bool pb_gltf_scene_update_animation(pb_gltf_scene *scene, uint32_t clip_index, float time_seconds);
 uint32_t pb_gltf_scene_skin_count(const pb_gltf_scene *scene);
+
+void pb_gltf_scene_set_frame_slot(pb_gltf_scene *scene, uint32_t slot);
 
 typedef struct pb_gltf_draw_info {
     VkBuffer vertex_buffer;
@@ -137,6 +143,8 @@ void pb_pbr_forward_pass_set_shadow_debug(pb_pbr_forward_pass *pass, bool enable
 void pb_pbr_forward_pass_set_frustum_culling_enabled(pb_pbr_forward_pass *pass, bool enabled);
 
 uint32_t pb_pbr_forward_pass_last_visible_draw_count(const pb_pbr_forward_pass *pass);
+
+void pb_pbr_forward_pass_set_frame_slot(pb_pbr_forward_pass *pass, uint32_t slot);
 
 void pb_pbr_forward_pass_record_shadow_map(
     pb_pbr_forward_pass *pass,

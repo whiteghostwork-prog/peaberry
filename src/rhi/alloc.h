@@ -22,10 +22,14 @@
 #include <stdbool.h>
 #include <volk.h>
 
+typedef struct pb_context pb_context;
+
 typedef enum pb_rhi_memory_usage {
     PB_RHI_MEMORY_CPU_TO_GPU,
     PB_RHI_MEMORY_GPU_ONLY,
 } pb_rhi_memory_usage;
+
+#define PB_RHI_FRAMES_IN_FLIGHT 2u
 
 bool pb_rhi_alloc_init(pb_vk_context *ctx);
 void pb_rhi_alloc_shutdown(pb_vk_context *ctx);
@@ -36,5 +40,11 @@ uint32_t pb_rhi_find_memory_type(
     VkMemoryPropertyFlags properties);
 
 VkMemoryPropertyFlags pb_rhi_memory_properties(pb_rhi_memory_usage usage);
+
+VkDeviceSize pb_rhi_align_up(VkDeviceSize value, VkDeviceSize alignment);
+
+VkDeviceSize pb_rhi_min_uniform_buffer_offset_alignment(const pb_context *context);
+
+VkDeviceSize pb_rhi_min_storage_buffer_offset_alignment(const pb_context *context);
 
 #endif

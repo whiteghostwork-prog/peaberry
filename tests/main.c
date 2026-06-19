@@ -16,6 +16,7 @@ void pb_run_bench_tests(void);
 void pb_run_draw_sort_tests(void);
 void pb_run_shadow_tests(void);
 void pb_run_frustum_cull_tests(void);
+void pb_run_ring_buffer_tests(void);
 
 int main(void)
 {
@@ -28,6 +29,7 @@ int main(void)
     pb_run_draw_sort_tests();
     pb_run_shadow_tests();
     pb_run_frustum_cull_tests();
+    pb_run_ring_buffer_tests();
     pb_run_bench_tests();
 
     pb_test_report("total");

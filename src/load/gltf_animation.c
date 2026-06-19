@@ -18,6 +18,7 @@
 #include <cglm/cglm.h>
 
 #include "cgltf.h"
+#include "pbr/gltf_scene_internal.h"
 #include "rhi/buffer.h"
 
 enum {

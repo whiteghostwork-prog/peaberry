@@ -29,6 +29,7 @@ add_executable(peaberry_tests
     test_draw_sort.c
     test_shadow.c
     test_frustum_cull.c
+    test_ring_buffer.c
 )
 
 target_include_directories(peaberry_tests

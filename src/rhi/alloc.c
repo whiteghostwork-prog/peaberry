@@ -16,6 +16,42 @@
 
 #include "rhi/alloc.h"
 
+#include "peaberry/peaberry_vk.h"
+
+VkDeviceSize pb_rhi_align_up(VkDeviceSize value, VkDeviceSize alignment)
+{
+    if (alignment == 0) {
+        return value;
+    }
+
+    const VkDeviceSize mask = alignment - 1;
+    return (value + mask) & ~mask;
+}
+
+VkDeviceSize pb_rhi_min_uniform_buffer_offset_alignment(const pb_context *context)
+{
+    VkPhysicalDevice physical_device = pb_context_physical_device(context);
+    if (physical_device == VK_NULL_HANDLE) {
+        return 256;
+    }
+
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(physical_device, &props);
+    return props.limits.minUniformBufferOffsetAlignment;
+}
+
+VkDeviceSize pb_rhi_min_storage_buffer_offset_alignment(const pb_context *context)
+{
+    VkPhysicalDevice physical_device = pb_context_physical_device(context);
+    if (physical_device == VK_NULL_HANDLE) {
+        return 256;
+    }
+
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(physical_device, &props);
+    return props.limits.minStorageBufferOffsetAlignment;
+}
+
 bool pb_rhi_alloc_init(pb_vk_context *ctx)
 {
     return ctx && ctx->device != VK_NULL_HANDLE && ctx->physical_device != VK_NULL_HANDLE;

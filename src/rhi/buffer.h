@@ -29,6 +29,7 @@ typedef struct pb_rhi_buffer {
     VkDeviceMemory memory;
     VkDeviceSize size;
     bool host_visible;
+    void *mapped;
 } pb_rhi_buffer;
 
 typedef struct pb_rhi_buffer_desc {
@@ -44,6 +45,14 @@ bool pb_rhi_buffer_create(
 void pb_rhi_buffer_destroy(pb_context *context, pb_rhi_buffer *buffer);
 
 VkBuffer pb_rhi_buffer_handle(const pb_rhi_buffer *buffer);
+
+void *pb_rhi_buffer_mapped(const pb_rhi_buffer *buffer);
+
+bool pb_rhi_buffer_write(
+    pb_rhi_buffer *buffer,
+    VkDeviceSize offset,
+    const void *data,
+    VkDeviceSize size);
 
 bool pb_rhi_buffer_upload(
     pb_context *context,

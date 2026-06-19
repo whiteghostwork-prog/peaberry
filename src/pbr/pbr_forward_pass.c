@@ -12,8 +12,10 @@
 #include "pbr/ibl.h"
 #include "pbr/shadow_pass.h"
 #include "pbr/vertex.h"
+#include "rhi/alloc.h"
 #include "rhi/buffer.h"
 #include "rhi/mesh.h"
+#include "rhi/ring_buffer.h"
 #include "rhi/shader.h"
 
 #include "core/log.h"
@@ -51,7 +53,8 @@ struct pb_pbr_forward_pass {
     VkDescriptorPool descriptor_pool;
     VkDescriptorSet *descriptor_sets;
     uint32_t descriptor_set_count;
-    pb_rhi_buffer frame_buffer;
+    pb_rhi_ring_buffer frame_ubo;
+    uint32_t frame_slot;
     pb_ibl_environment ibl;
     pb_gltf_scene *scene;
     pb_shadow_pass *shadow;
@@ -77,7 +80,7 @@ static bool create_descriptor_set_layout(struct pb_pbr_forward_pass *pass)
     VkDescriptorSetLayoutBinding bindings[] = {
         {
             .binding = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         },
@@ -186,7 +189,7 @@ static bool write_material_descriptor_set(
     const pb_gltf_scene *scene)
 {
     VkDescriptorBufferInfo frame_info = {
-        .buffer = pb_rhi_buffer_handle(&pass->frame_buffer),
+        .buffer = pb_rhi_ring_buffer_handle(&pass->frame_ubo),
         .offset = 0,
         .range = sizeof(pb_frame_ubo),
     };
@@ -263,7 +266,7 @@ static bool write_material_descriptor_set(
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = set,
             .dstBinding = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
             .descriptorCount = 1,
             .pBufferInfo = &frame_info,
         },
@@ -386,8 +389,12 @@ void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *sce
 
     VkDescriptorPoolSize pool_sizes[] = {
         {
+            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+            .descriptorCount = material_count,
+        },
+        {
             .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 2 * material_count,
+            .descriptorCount = material_count,
         },
         {
             .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -402,7 +409,7 @@ void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *sce
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .maxSets = material_count,
-        .poolSizeCount = 3,
+        .poolSizeCount = 4,
         .pPoolSizes = pool_sizes,
     };
 
@@ -722,7 +729,16 @@ static void update_frame_uniforms(
     const pb_gltf_scene *scene)
 {
     const pb_frame_ubo frame = build_frame_ubo(pass, extent, scene);
-    pb_rhi_buffer_upload(pass->context, &pass->frame_buffer, &frame, sizeof(frame));
+    pb_rhi_ring_buffer_write_slot(&pass->frame_ubo, pass->frame_slot, &frame, sizeof(frame));
+}
+
+static void pass_descriptor_dynamic_offsets(
+    const struct pb_pbr_forward_pass *pass,
+    const pb_gltf_scene *scene,
+    uint32_t *out_offset)
+{
+    (void)scene;
+    *out_offset = (uint32_t)pb_rhi_ring_buffer_slot_offset(&pass->frame_ubo, pass->frame_slot);
 }
 
 static VkPipeline select_opaque_pipeline(
@@ -755,6 +771,9 @@ static void record_one_draw(
     }
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    uint32_t frame_dynamic_offset = 0;
+    pass_descriptor_dynamic_offsets(pass, scene, &frame_dynamic_offset);
     vkCmdBindDescriptorSets(
         cmd,
         VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -762,8 +781,8 @@ static void record_one_draw(
         0,
         1,
         &pass->descriptor_sets[draw->material_index],
-        0,
-        NULL);
+        1,
+        &frame_dynamic_offset);
 
     pb_pbr_push_constants push = {0};
     memcpy(push.model, draw->world, sizeof(push.model));
@@ -869,13 +888,14 @@ pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *
     pass->frustum_culling_enabled = true;
     pass->last_visible_draw_count = 0;
 
-    pb_rhi_buffer_desc frame_desc = {
-        .size = sizeof(pb_frame_ubo),
-        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
-    };
-
-    if (!create_descriptor_set_layout(pass) || !pb_rhi_buffer_create(pass->context, &frame_desc, &pass->frame_buffer) ||
+    if (!create_descriptor_set_layout(pass) ||
+        !pb_rhi_ring_buffer_create(
+            pass->context,
+            sizeof(pb_frame_ubo),
+            PB_RHI_FRAMES_IN_FLIGHT,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            pb_rhi_min_uniform_buffer_offset_alignment(pass->context),
+            &pass->frame_ubo) ||
         !pb_ibl_environment_create(
             &(pb_ibl_environment_desc){
                 .context = pass->context,
@@ -950,7 +970,7 @@ void pb_pbr_forward_pass_destroy(pb_pbr_forward_pass *pass)
         if (pass->descriptor_set_layout) {
             vkDestroyDescriptorSetLayout(device, pass->descriptor_set_layout, NULL);
         }
-        pb_rhi_buffer_destroy(pass->context, &pass->frame_buffer);
+        pb_rhi_ring_buffer_destroy(pass->context, &pass->frame_ubo);
         pb_ibl_environment_destroy(pass->context, &pass->ibl);
         if (pass->shadow) {
             pb_shadow_pass_destroy(pass->shadow);
@@ -1030,6 +1050,13 @@ uint32_t pb_pbr_forward_pass_last_visible_draw_count(const pb_pbr_forward_pass *
     return pass ? pass->last_visible_draw_count : 0;
 }
 
+void pb_pbr_forward_pass_set_frame_slot(pb_pbr_forward_pass *pass, uint32_t slot)
+{
+    if (pass) {
+        pass->frame_slot = slot % PB_RHI_FRAMES_IN_FLIGHT;
+    }
+}
+
 void pb_pbr_forward_pass_record_shadow_map(
     pb_pbr_forward_pass *pass,
     VkCommandBuffer cmd,
@@ -1049,12 +1076,17 @@ void pb_pbr_forward_pass_record_shadow_map(
     }
 
     update_frame_uniforms(pass, extent, scene);
+
+    uint32_t frame_dynamic_offset = 0;
+    pass_descriptor_dynamic_offsets(pass, scene, &frame_dynamic_offset);
     pb_shadow_pass_record(
         pass->shadow,
         cmd,
         scene,
         pass->descriptor_sets,
-        pass->descriptor_set_count);
+        pass->descriptor_set_count,
+        &frame_dynamic_offset,
+        1);
 }
 
 void pb_pbr_forward_pass_record(
@@ -1077,14 +1109,6 @@ void pb_pbr_forward_pass_record(
     }
 
     update_frame_uniforms(pass, extent, scene);
-
-    for (uint32_t i = 0; i < scene->material_count; ++i) {
-        pb_rhi_buffer_upload(
-            pass->context,
-            &scene->materials[i].material_buffer,
-            &scene->materials[i].material_data,
-            sizeof(scene->materials[i].material_data));
-    }
 
     const pb_frame_ubo frame = build_frame_ubo(pass, extent, scene);
     const uint32_t draw_count = scene->draw_count;

@@ -802,6 +802,13 @@ uint32_t pb_gltf_scene_skin_count(const pb_gltf_scene *scene)
     return scene ? scene->skin_count : 0;
 }
 
+void pb_gltf_scene_set_frame_slot(pb_gltf_scene *scene, uint32_t slot)
+{
+    if (scene) {
+        scene->frame_slot = slot % PB_FRAMES_IN_FLIGHT;
+    }
+}
+
 float pb_gltf_scene_animation_duration(const pb_gltf_scene *scene, uint32_t clip_index)
 {
     if (!scene || clip_index >= scene->animation_count) {
