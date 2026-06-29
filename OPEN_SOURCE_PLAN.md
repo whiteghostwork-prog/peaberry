@@ -26,23 +26,33 @@ The research question is not “can an agent write any code,” but **can agents
 | Vulkan RHI + forward PBR + IBL | Done |
 | glTF loader (materials, alpha, sort, hierarchy, UV transform) | Done |
 | Animation + skinning | Done |
-| Directional shadows, MSAA, frustum culling | Done locally (11.1–11.4; commit pending) |
+| Directional shadows, MSAA, frustum culling | Done |
 | Repo split (`peaberry` / `espresso`) | Done |
-| Asset dedup (fixtures only in espresso) | Done locally |
+| Asset dedup (fixtures only in espresso) | Done |
+| Per-frame allocators + instancing (11.5–11.6) | Done |
+| Bench `gltf_shadows` scenario (11.7) | Done |
 | Stress benchmark scenes | Planned (Phase 7.8) |
+| Bench preview window (11.8) | Planned |
 | Ray tracing | Planned (Phase 12, optional) |
 
 ## Immediate next steps
 
-1. **Commit Phase 11.4** — frustum culling + bench `visible_draw_calls` (peaberry + espresso)
-2. **Commit asset cleanup** — remove `peaberry/assets/`; tests resolve `../espresso/assets`
-3. **Phase 11.5** — per-frame UBO/staging allocators (reduce `vkMapMemory` churn)
-4. **Phase 11.6** — instancing / batching + `gltf_instanced` bench scenario
-5. **Phase 7.8** — `stress_grid.gltf` + `gltf_stress` bench (multi-draw scene for culling/shadows)
-6. **Bench scenarios** — `gltf_shadows` to isolate shadow-pass cost vs `gltf` baseline
-7. **Docs sync** — README, OPEN_SOURCE_PLAN, roadmap aligned with split layout
+1. **Phase 11.8 — bench preview window** (espresso) — optional `--window` on `peaberry_bench`: present the scenario live, then print timing stats to the console when the run finishes; headless remains default for CI
+2. **Phase 7.8** — `stress_grid.gltf` + `gltf_stress` bench (multi-draw scene for culling/shadows)
+3. **Docs sync** — README, benchmarks.md, dependencies aligned with current scenarios (`gltf_instanced`, `gltf_shadows`)
+4. **Tagged release** — pin espresso CI to semver peaberry
 
 ## Medium-term plans
+
+### Bench preview window (Phase 11.8)
+
+`peaberry_bench` is headless by design (offscreen targets, GPU timestamps, CI-friendly). For local debugging it is hard to confirm *what* is being measured. Plan:
+
+- `--window` flag (or subcommand) on `peaberry_bench` in **espresso**
+- Reuse WSI from `examples/common/wsi.c` — swapchain present each sample frame so the scene is visible
+- Same warmup/sample frame counts and scenarios as headless mode
+- When the run completes, close the window and **print the usual timing table / JSON to stdout** (no change to regression schema)
+- Headless stays the default; CI never enables `--window`
 
 ### Stress benchmarks (Phase 7.8)
 

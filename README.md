@@ -27,14 +27,14 @@ Application summary: [OPEN_SOURCE_PLAN.md](OPEN_SOURCE_PLAN.md)
 
 Near term:
 
-- Per-frame allocators and draw batching (Phase 11.5–11.6)
-- Benchmark scenarios for shadows and instancing
+- Bench preview window — live scene + console timing report after run (Phase 11.8)
+- Stress benchmark scenes (`gltf_stress`, Phase 7.8)
 
 Longer term (optional):
 
 - Ray-traced effects behind a feature flag
 
-More detail: [docs/roadmap.md](docs/roadmap.md)
+More detail: [OPEN_SOURCE_PLAN.md](OPEN_SOURCE_PLAN.md) and [docs/benchmarks.md](docs/benchmarks.md)
 
 ## Quick start
 
