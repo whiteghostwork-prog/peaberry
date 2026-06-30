@@ -459,8 +459,8 @@ bool pb_shadow_light_matrices_fit_aabb(
         light_max[0] + pad,
         light_min[1] - pad,
         light_max[1] + pad,
-        -light_max[2] - pad,
-        -light_min[2] + pad);
+        light_min[2] - pad,
+        light_max[2] + pad);
 
     return true;
 }
@@ -616,6 +616,34 @@ void pb_shadow_pass_record(
     }
 
     vkCmdEndRenderPass(cmd);
+
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = pass->depth_image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+        },
+    };
+
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0,
+        0,
+        NULL,
+        0,
+        NULL,
+        1,
+        &barrier);
 }
 
 VkImageView pb_shadow_pass_depth_view(const pb_shadow_pass *pass)

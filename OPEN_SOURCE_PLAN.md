@@ -32,27 +32,23 @@ The research question is not “can an agent write any code,” but **can agents
 | Per-frame allocators + instancing (11.5–11.6) | Done |
 | Bench `gltf_shadows` scenario (11.7) | Done |
 | Stress benchmark scenes | Planned (Phase 7.8) |
-| Bench preview window (11.8) | Planned |
+| Bench preview window (11.8) | Done |
 | Ray tracing | Planned (Phase 12, optional) |
 
 ## Immediate next steps
 
-1. **Phase 11.8 — bench preview window** (espresso) — optional `--window` on `peaberry_bench`: present the scenario live, then print timing stats to the console when the run finishes; headless remains default for CI
-2. **Phase 7.8** — `stress_grid.gltf` + `gltf_stress` bench (multi-draw scene for culling/shadows)
-3. **Docs sync** — README, benchmarks.md, dependencies aligned with current scenarios (`gltf_instanced`, `gltf_shadows`)
+1. **Phase 7.8** — `stress_grid.gltf` + `gltf_stress` bench (multi-draw scene for culling/shadows)
+2. **Bench polish** — `test_cube_ground.gltf` or floor mesh so cast shadows are visible in `--window` / viewer
+3. **Docs sync** — README, benchmarks.md, dependencies aligned with current scenarios (`gltf_instanced`, `gltf_shadows`, `--window`)
 4. **Tagged release** — pin espresso CI to semver peaberry
 
 ## Medium-term plans
 
-### Bench preview window (Phase 11.8)
+### Bench preview window (Phase 11.8) — done
 
-`peaberry_bench` is headless by design (offscreen targets, GPU timestamps, CI-friendly). For local debugging it is hard to confirm *what* is being measured. Plan:
+`peaberry_bench --window` in espresso presents each sample frame via WSI (orbit camera, glTF animation when present), then prints the usual timing table / JSON to stdout when the run finishes. Headless remains the default for CI.
 
-- `--window` flag (or subcommand) on `peaberry_bench` in **espresso**
-- Reuse WSI from `examples/common/wsi.c` — swapchain present each sample frame so the scene is visible
-- Same warmup/sample frame counts and scenarios as headless mode
-- When the run completes, close the window and **print the usual timing table / JSON to stdout** (no change to regression schema)
-- Headless stays the default; CI never enables `--window`
+Shadow map light projection was fixed for LH view space (peaberry); glTF viewer `S` toggles an optional neutral shadow overlay.
 
 ### Stress benchmarks (Phase 7.8)
 

@@ -98,22 +98,17 @@ vec3 aces_tonemap(vec3 color)
     return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
 }
 
-float calc_shadow(vec3 world_pos, vec3 N, vec3 L)
+/* Shadow map UV + depth in light clip space (xy in [0,1] after perspective divide). */
+bool shadow_light_proj(vec3 world_pos, out vec3 proj_coords)
 {
-    if (frame.shadows_enabled < 0.5) {
-        return 1.0;
-    }
-
     vec4 light_clip = frame.light_proj * frame.light_view * vec4(world_pos, 1.0);
-    vec3 proj_coords = light_clip.xyz / light_clip.w;
+    proj_coords = light_clip.xyz / light_clip.w;
     proj_coords.xy = proj_coords.xy * 0.5 + 0.5;
+    return true;
+}
 
-    if (proj_coords.x < 0.0 || proj_coords.x > 1.0 ||
-        proj_coords.y < 0.0 || proj_coords.y > 1.0 ||
-        proj_coords.z < 0.0 || proj_coords.z > 1.0) {
-        return 1.0;
-    }
-
+float calc_shadow_from_proj(vec3 proj_coords, vec3 N, vec3 L)
+{
     float NdotL = max(dot(N, L), 0.0);
     float slope_bias = frame.shadow_bias_slope * sqrt(1.0 - NdotL * NdotL) / max(NdotL, 0.0001);
     float bias = max(frame.shadow_bias * (1.0 - NdotL) + slope_bias, 0.0001);
@@ -129,6 +124,24 @@ float calc_shadow(vec3 world_pos, vec3 N, vec3 L)
     }
 
     return shadow / 9.0;
+}
+
+float calc_shadow(vec3 world_pos, vec3 N, vec3 L)
+{
+    if (frame.shadows_enabled < 0.5) {
+        return 1.0;
+    }
+
+    vec3 proj_coords;
+    shadow_light_proj(world_pos, proj_coords);
+
+    if (proj_coords.x < 0.0 || proj_coords.x > 1.0 ||
+        proj_coords.y < 0.0 || proj_coords.y > 1.0 ||
+        proj_coords.z < 0.0 || proj_coords.z > 1.0) {
+        return 1.0;
+    }
+
+    return calc_shadow_from_proj(proj_coords, N, L);
 }
 
 vec2 transform_uv(vec2 uv, int slot)
@@ -220,9 +233,22 @@ void main()
     color += emissive;
 
     if (frame.shadow_debug > 0.5) {
-        float shadow_vis = calc_shadow(v_world_pos, N, L);
-        color = vec3(shadow_vis);
-        alpha = 1.0;
+        if (frame.shadows_enabled < 0.5) {
+            color = mix(color, vec3(1.0, 0.2, 0.2), 0.5);
+        } else {
+            vec3 proj_coords;
+            shadow_light_proj(v_world_pos, proj_coords);
+
+            if (proj_coords.x < 0.0 || proj_coords.x > 1.0 ||
+                proj_coords.y < 0.0 || proj_coords.y > 1.0 ||
+                proj_coords.z < 0.0 || proj_coords.z > 1.0) {
+                color = mix(color, vec3(0.2, 0.35, 0.9), 0.45);
+            } else {
+                const float lit = calc_shadow_from_proj(proj_coords, N, L);
+                /* Neutral darken — preserve albedo hue, no color cast. */
+                color *= mix(0.35, 1.0, lit);
+            }
+        }
     }
 
     color = aces_tonemap(color * frame.exposure);
