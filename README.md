@@ -25,14 +25,9 @@ Application summary: [OPEN_SOURCE_PLAN.md](OPEN_SOURCE_PLAN.md)
 
 ## Plans
 
-Near term:
+Near term: bench polish (ground plane for cast shadows), docs sync, tagged release.
 
-- Bench preview window — live scene + console timing report after run (Phase 11.8)
-- Stress benchmark scenes (`gltf_stress`, Phase 7.8)
-
-Longer term (optional):
-
-- Ray-traced effects behind a feature flag
+Medium term: stress-scene baselines, optional ray tracing (Phase 12), mikktspace tangents.
 
 More detail: [OPEN_SOURCE_PLAN.md](OPEN_SOURCE_PLAN.md) and [docs/benchmarks.md](docs/benchmarks.md)
 

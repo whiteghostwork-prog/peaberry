@@ -31,34 +31,29 @@ The research question is not “can an agent write any code,” but **can agents
 | Asset dedup (fixtures only in espresso) | Done |
 | Per-frame allocators + instancing (11.5–11.6) | Done |
 | Bench `gltf_shadows` scenario (11.7) | Done |
-| Stress benchmark scenes | Planned (Phase 7.8) |
+| Stress benchmark scenes | Done (Phase 7.8) |
 | Bench preview window (11.8) | Done |
+| Ground plane shadow demo asset | Done |
 | Ray tracing | Planned (Phase 12, optional) |
 
 ## Immediate next steps
 
-1. **Phase 7.8** — `stress_grid.gltf` + `gltf_stress` bench (multi-draw scene for culling/shadows)
-2. **Bench polish** — `test_cube_ground.gltf` or floor mesh so cast shadows are visible in `--window` / viewer
-3. **Docs sync** — README, benchmarks.md, dependencies aligned with current scenarios (`gltf_instanced`, `gltf_shadows`, `--window`)
-4. **Tagged release** — pin espresso CI to semver peaberry
+1. **Docs sync** — README, benchmarks.md, dependencies aligned with current scenarios (`gltf_instanced`, `gltf_shadows`, `gltf_stress`, `--window`)
+2. **Tagged release** — pin espresso CI to semver peaberry
 
 ## Medium-term plans
 
-### Bench preview window (Phase 11.8) — done
+### Bench & profiling polish
 
-`peaberry_bench --window` in espresso presents each sample frame via WSI (orbit camera, glTF animation when present), then prints the usual timing table / JSON to stdout when the run finishes. Headless remains the default for CI.
+- **Stress baselines** — capture local JSON baselines on `gltf_stress` / `gltf_stress_shadows` (never CI; micro scenes stay in CI smoke)
+- **Scale-up scenes** — regenerate `stress_grid.gltf` at 16×16 (256 draws) or larger via `gen_stress_scene.py` for local culling/sort/shadow profiling
+- **Heavy content (optional)** — downloaded Sponza or similar for local baselines only (gitignored)
 
-Shadow map light projection was fixed for LH view space (peaberry); glTF viewer `S` toggles an optional neutral shadow overlay.
+### Packaging & documentation
 
-### Stress benchmarks (Phase 7.8)
-
-Current bench smoke uses `test_cube` (1 draw) — too small to measure culling, sorting, or shadow cost at scale. Plan:
-
-- `scripts/gen_stress_scene.py` in espresso — N×M grid of cubes, multiple materials
-- Checked-in `assets/scenes/stress_grid.gltf` (~64–256 draws)
-- New scenarios: `gltf_stress`, `gltf_stress_shadows`, camera preset to validate culling
-- Optional downloaded Sponza for local baselines only (gitignored)
-- CI stays on micro scenes; stress runs locally
+- **Docs sync** — README, `docs/benchmarks.md`, `docs/dependencies.md` aligned with `gltf_instanced`, `gltf_shadows`, `gltf_stress`, `--window`, `--detailed`, `--fps`
+- **Tagged release** — semver peaberry tag; pin espresso CI to a released version instead of floating `main`
+- **`find_package(Peaberry)`** — CMake config polish for downstream consumers
 
 ### Ray tracing (Phase 12, optional)
 
@@ -71,12 +66,9 @@ Hybrid desktop RT behind `PEABERRY_ENABLE_RAYTRACING=OFF` by default:
 - `rt_hybrid` bench on `stress_grid` — local only, never CI
 - Skinning + RT deferred; forward path unchanged when RT off
 
-See `docs/roadmap.md` Phase 12 for full step list, extensions, and out-of-scope items.
+### Loader & content
 
-### Other
-
-- Tangents via mikktspace (Phase 9.6, deferred)
-- `find_package(Peaberry)` polish and tagged releases for espresso pinning
+- **Tangents via mikktspace** (Phase 9.6, deferred) — proper normal mapping without artist-supplied tangents
 
 ## Why open source
 
