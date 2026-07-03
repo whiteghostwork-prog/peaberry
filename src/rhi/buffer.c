@@ -77,6 +77,13 @@ bool pb_rhi_buffer_create(
         .memoryTypeIndex = mem_type,
     };
 
+    VkMemoryAllocateFlagsInfo flags_info = {0};
+    if (desc->usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
+        flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+        flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+        alloc_info.pNext = &flags_info;
+    }
+
     if (vkAllocateMemory(device, &alloc_info, NULL, &buffer->memory) != VK_SUCCESS) {
         pb_log_error("vkAllocateMemory failed");
         vkDestroyBuffer(device, buffer->handle, NULL);

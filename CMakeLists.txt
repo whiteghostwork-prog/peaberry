@@ -14,6 +14,7 @@ option(PEABERRY_BUILD_EXAMPLES "Build peaberry examples (deprecated: use espress
 option(PEABERRY_BUILD_TESTS "Build and register peaberry tests" ON)
 option(PEABERRY_BUILD_BENCHMARKS "Build peaberry_bench GPU benchmark runner (deprecated: use espresso repo)" OFF)
 option(PEABERRY_ENABLE_VALIDATION "Enable Vulkan validation layers" ON)
+option(PEABERRY_ENABLE_RAYTRACING "Enable hybrid rayQuery reflections (Phase 12)" OFF)
 
 # Headless tests load glTF fixtures and sphere maps from espresso (Phase 10.7).
 set(PEABERRY_ASSET_DIR "" CACHE PATH
@@ -76,6 +77,33 @@ peaberry_compile_glsl(PEABERRY_SHADER_SPIRV
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow_depth.vert
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow_depth.frag
 )
+
+if(PEABERRY_ENABLE_RAYTRACING)
+    set(PEABERRY_RT_FRAG ${CMAKE_CURRENT_BINARY_DIR}/shaders/pbr_forward_rt.frag.spv)
+    if(PEABERRY_GLSLC)
+        add_custom_command(
+            OUTPUT ${PEABERRY_RT_FRAG}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/shaders
+            COMMAND ${PEABERRY_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/shaders/pbr_forward_rt.frag
+                -o ${PEABERRY_RT_FRAG} --target-env=vulkan1.2
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/pbr_forward_rt.frag
+            COMMENT "Compiling pbr_forward_rt.frag to SPIR-V"
+            VERBATIM
+        )
+    else()
+        add_custom_command(
+            OUTPUT ${PEABERRY_RT_FRAG}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/shaders
+            COMMAND ${PEABERRY_GLSLANG_VALIDATOR} -V ${CMAKE_CURRENT_SOURCE_DIR}/shaders/pbr_forward_rt.frag
+                -o ${PEABERRY_RT_FRAG} --target-env vulkan1.2
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/pbr_forward_rt.frag
+            COMMENT "Compiling pbr_forward_rt.frag to SPIR-V"
+            VERBATIM
+        )
+    endif()
+    add_custom_target(peaberry_rt_shaders DEPENDS ${PEABERRY_RT_FRAG})
+    add_dependencies(peaberry_shaders peaberry_rt_shaders)
+endif()
 
 add_subdirectory(src)
 

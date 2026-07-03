@@ -45,8 +45,18 @@ target_include_directories(peaberry
 target_compile_definitions(peaberry
     PRIVATE
         $<$<BOOL:${PEABERRY_ENABLE_VALIDATION}>:PEABERRY_ENABLE_VALIDATION=1>
+        $<$<BOOL:${PEABERRY_ENABLE_RAYTRACING}>:PEABERRY_ENABLE_RAYTRACING=1>
         _POSIX_C_SOURCE=200809L
 )
+
+if(PEABERRY_ENABLE_RAYTRACING)
+    target_sources(peaberry PRIVATE
+        rhi/rt_accel.c
+        pbr/rt_scene.c
+        pbr/pbr_forward_rt.c
+    )
+    add_dependencies(peaberry peaberry_rt_shaders)
+endif()
 
 target_link_libraries(peaberry
     PUBLIC

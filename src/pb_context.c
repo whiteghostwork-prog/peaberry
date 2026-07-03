@@ -172,3 +172,13 @@ void pb_context_wait_device_idle(pb_context *ctx)
 
     vkDeviceWaitIdle(ctx->vk.device);
 }
+
+bool pb_context_raytracing_supported(const pb_context *ctx)
+{
+#ifdef PEABERRY_ENABLE_RAYTRACING
+    return ctx && ctx->vk.raytracing_supported;
+#else
+    (void)ctx;
+    return false;
+#endif
+}

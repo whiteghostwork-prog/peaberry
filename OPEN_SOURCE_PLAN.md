@@ -34,12 +34,13 @@ The research question is not “can an agent write any code,” but **can agents
 | Stress benchmark scenes | Done (Phase 7.8) |
 | Bench preview window (11.8) | Done |
 | Ground plane shadow demo asset | Done |
-| Ray tracing | Planned (Phase 12, optional) |
+| Ray tracing (Phase 12) | In progress — hybrid rayQuery reflections behind `PEABERRY_ENABLE_RAYTRACING` |
 
 ## Immediate next steps
 
-1. **Docs sync** — README, benchmarks.md, dependencies aligned with current scenarios (`gltf_instanced`, `gltf_shadows`, `gltf_stress`, `--window`)
-2. **Tagged release** — pin espresso CI to semver peaberry
+1. **Phase 12 follow-ups** — RT material hit shading, optional RT shadows, `peaberry_pathtrace` reference in espresso
+2. **Docs sync** — README, benchmarks.md, dependencies aligned with current scenarios (`gltf_instanced`, `gltf_shadows`, `gltf_stress`, `rt_hybrid`, `--window`)
+3. **Tagged release** — pin espresso CI to semver peaberry
 
 ## Medium-term plans
 
@@ -59,11 +60,10 @@ The research question is not “can an agent write any code,” but **can agents
 
 Hybrid desktop RT behind `PEABERRY_ENABLE_RAYTRACING=OFF` by default:
 
-- BLAS/TLAS from existing meshes + scene graph transforms
-- Single-bounce specular reflections via `rayQuery` (dedicated RT shader variant)
+- **Done (12.1)** — BLAS/TLAS from glTF meshes, `rayQuery` specular reflections (`pbr_forward_rt.frag`), `pb_pbr_forward_pass_set_raytracing_enabled`, `rt_hybrid` bench scenario (local only)
 - RT shadows as optional compare to Phase 11 shadow maps
+- Material-aware RT hit shading (instance custom index → albedo SSBO)
 - `peaberry_pathtrace` quality reference in espresso only
-- `rt_hybrid` bench on `stress_grid` — local only, never CI
 - Skinning + RT deferred; forward path unchanged when RT off
 
 ### Loader & content

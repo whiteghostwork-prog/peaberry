@@ -27,7 +27,9 @@ Application summary: [OPEN_SOURCE_PLAN.md](OPEN_SOURCE_PLAN.md)
 
 Near term: bench polish (ground plane for cast shadows), docs sync, tagged release.
 
-Medium term: stress-scene baselines, optional ray tracing (Phase 12), mikktspace tangents.
+Medium term: optional ray tracing (Phase 12), stress-scene baselines, mikktspace tangents.
+
+Build with hybrid RT (off by default): `cmake -DPEABERRY_ENABLE_RAYTRACING=ON`
 
 More detail: [OPEN_SOURCE_PLAN.md](OPEN_SOURCE_PLAN.md) and [docs/benchmarks.md](docs/benchmarks.md)
 

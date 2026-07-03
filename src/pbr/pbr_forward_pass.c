@@ -11,6 +11,7 @@
 #include "pbr/gltf_scene_internal.h"
 #include "pbr/ibl.h"
 #include "pbr/shadow_pass.h"
+#include "pbr/pbr_forward_rt.h"
 #include "pbr/vertex.h"
 #include "rhi/alloc.h"
 #include "rhi/buffer.h"
@@ -77,6 +78,7 @@ struct pb_pbr_forward_pass {
     pb_mat4 external_view;
     pb_mat4 external_proj;
     float external_camera_pos[3];
+    pb_pbr_forward_rt rt;
 };
 
 enum {
@@ -185,11 +187,23 @@ static bool create_descriptor_set_layout(struct pb_pbr_forward_pass *pass)
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
         },
+#ifdef PEABERRY_ENABLE_RAYTRACING
+        {
+            .binding = 13,
+            .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+#endif
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+#ifdef PEABERRY_ENABLE_RAYTRACING
+        .bindingCount = 14,
+#else
         .bindingCount = 13,
+#endif
         .pBindings = bindings,
     };
 
@@ -412,6 +426,9 @@ static bool write_material_descriptor_set(
     };
 
     vkUpdateDescriptorSets(pb_context_device(pass->context), 13, writes, 0, NULL);
+#ifdef PEABERRY_ENABLE_RAYTRACING
+    pb_pbr_forward_rt_write_descriptor(&pass->rt, set);
+#endif
     return true;
 }
 
@@ -455,12 +472,22 @@ void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *sce
             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .descriptorCount = 2 * material_count,
         },
+#ifdef PEABERRY_ENABLE_RAYTRACING
+        {
+            .type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+            .descriptorCount = material_count,
+        },
+#endif
     };
 
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .maxSets = material_count,
+#ifdef PEABERRY_ENABLE_RAYTRACING
+        .poolSizeCount = 5,
+#else
         .poolSizeCount = 4,
+#endif
         .pPoolSizes = pool_sizes,
     };
 
@@ -494,6 +521,9 @@ void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *sce
     pass->descriptor_sets = sets;
     pass->descriptor_set_count = material_count;
     pass->scene = scene;
+#ifdef PEABERRY_ENABLE_RAYTRACING
+    pb_pbr_forward_rt_set_scene(&pass->rt, scene);
+#endif
     pb_log_info("PBR forward pass bound %u material(s)", material_count);
 }
 
@@ -796,7 +826,11 @@ static VkPipeline select_opaque_pipeline(
     const struct pb_pbr_forward_pass *pass,
     const pb_gltf_material *material)
 {
-    return material->double_sided ? pass->pipeline_opaque_double : pass->pipeline_opaque;
+    return pb_pbr_forward_rt_select_opaque_pipeline(
+        &pass->rt,
+        pass->pipeline_opaque,
+        pass->pipeline_opaque_double,
+        material->double_sided);
 }
 
 static void record_one_draw(
@@ -970,6 +1004,25 @@ pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *
         return NULL;
     }
 
+#ifdef PEABERRY_ENABLE_RAYTRACING
+    char rt_frag_spv[512];
+    const char *rt_path = NULL;
+    if (derive_shadow_spv_path(desc->frag_spv_path, rt_frag_spv, sizeof(rt_frag_spv), "pbr_forward_rt.frag.spv")) {
+        rt_path = rt_frag_spv;
+    }
+    if (!pb_pbr_forward_rt_create(
+            &pass->rt,
+            pass->context,
+            pass->vert_module,
+            pass->pipeline_layout,
+            desc->render_pass,
+            desc->rasterization_samples,
+            rt_path)) {
+        pb_pbr_forward_pass_destroy(pass);
+        return NULL;
+    }
+#endif
+
     char shadow_vert_spv[512];
     char shadow_frag_spv[512];
     if (derive_shadow_spv_path(desc->vert_spv_path, shadow_vert_spv, sizeof(shadow_vert_spv), "shadow_depth.vert.spv") &&
@@ -1045,6 +1098,9 @@ void pb_pbr_forward_pass_destroy(pb_pbr_forward_pass *pass)
         if (pass->frag_module) {
             vkDestroyShaderModule(device, pass->frag_module, NULL);
         }
+#ifdef PEABERRY_ENABLE_RAYTRACING
+        pb_pbr_forward_rt_destroy(&pass->rt);
+#endif
     }
 
     free(pass);
@@ -1213,6 +1269,9 @@ void pb_pbr_forward_pass_record(
     }
 
     update_frame_uniforms(pass, extent, scene);
+#ifdef PEABERRY_ENABLE_RAYTRACING
+    pb_pbr_forward_rt_update_scene(&pass->rt, scene);
+#endif
 
     const pb_frame_ubo frame = build_frame_ubo(pass, extent, scene);
     const uint32_t draw_count = scene->draw_count;
@@ -1328,4 +1387,30 @@ void pb_pbr_forward_pass_record(
 
     free(opaque_entries);
     free(blend_entries);
+}
+
+void pb_pbr_forward_pass_set_raytracing_enabled(pb_pbr_forward_pass *pass, bool enabled)
+{
+    if (!pass) {
+        return;
+    }
+
+#ifdef PEABERRY_ENABLE_RAYTRACING
+    pb_pbr_forward_rt_set_enabled(&pass->rt, enabled);
+#else
+    (void)enabled;
+#endif
+}
+
+bool pb_pbr_forward_pass_raytracing_available(const pb_pbr_forward_pass *pass)
+{
+    if (!pass) {
+        return false;
+    }
+
+#ifdef PEABERRY_ENABLE_RAYTRACING
+    return pb_pbr_forward_rt_available(&pass->rt);
+#else
+    return false;
+#endif
 }

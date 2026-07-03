@@ -169,4 +169,8 @@ void pb_pbr_forward_pass_record(
     const pb_gltf_scene *scene,
     float time_seconds);
 
+void pb_pbr_forward_pass_set_raytracing_enabled(pb_pbr_forward_pass *pass, bool enabled);
+
+bool pb_pbr_forward_pass_raytracing_available(const pb_pbr_forward_pass *pass);
+
 #endif
