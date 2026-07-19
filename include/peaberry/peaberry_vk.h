@@ -38,6 +38,4 @@ VkSampleCountFlagBits pb_context_choose_msaa_samples(
     const pb_context *ctx,
     VkSampleCountFlagBits requested_max);
 
-bool pb_context_raytracing_supported(const pb_context *ctx);
-
 #endif

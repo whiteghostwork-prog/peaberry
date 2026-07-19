@@ -28,6 +28,7 @@ add_library(peaberry STATIC
     load/gltf.c
     load/gltf_animation.c
     load/tangent.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mikktspace/mikktspace.c
 )
 
 add_dependencies(peaberry peaberry_shaders)
@@ -38,6 +39,7 @@ target_include_directories(peaberry
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mikktspace
         ${stb_SOURCE_DIR}
         ${cgltf_SOURCE_DIR}
 )
@@ -45,18 +47,8 @@ target_include_directories(peaberry
 target_compile_definitions(peaberry
     PRIVATE
         $<$<BOOL:${PEABERRY_ENABLE_VALIDATION}>:PEABERRY_ENABLE_VALIDATION=1>
-        $<$<BOOL:${PEABERRY_ENABLE_RAYTRACING}>:PEABERRY_ENABLE_RAYTRACING=1>
         _POSIX_C_SOURCE=200809L
 )
-
-if(PEABERRY_ENABLE_RAYTRACING)
-    target_sources(peaberry PRIVATE
-        rhi/rt_accel.c
-        pbr/rt_scene.c
-        pbr/pbr_forward_rt.c
-    )
-    add_dependencies(peaberry peaberry_rt_shaders)
-endif()
 
 target_link_libraries(peaberry
     PUBLIC

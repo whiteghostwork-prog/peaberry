@@ -216,10 +216,6 @@ bool pb_vk_context_init_instance(
         extensions[ext_count++] = VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME;
     }
 
-#ifdef PEABERRY_ENABLE_RAYTRACING
-    extensions[ext_count++] = VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
-#endif
-
     const char *layers[1];
     uint32_t layer_count = 0;
     if (ctx->validation_enabled) {
@@ -333,46 +329,6 @@ static bool has_device_extension(VkPhysicalDevice physical_device, const char *n
     return found;
 }
 
-#ifdef PEABERRY_ENABLE_RAYTRACING
-static bool query_raytracing_support(VkPhysicalDevice physical_device)
-{
-    const char *required[] = {
-        VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
-        VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
-        VK_KHR_RAY_QUERY_EXTENSION_NAME,
-    };
-
-    for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); ++i) {
-        if (!has_device_extension(physical_device, required[i])) {
-            return false;
-        }
-    }
-
-    VkPhysicalDeviceBufferDeviceAddressFeatures bda_features = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
-    };
-
-    VkPhysicalDeviceAccelerationStructureFeaturesKHR as_features = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
-        .pNext = &bda_features,
-    };
-
-    VkPhysicalDeviceRayQueryFeaturesKHR rq_features = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
-        .pNext = &as_features,
-    };
-
-    VkPhysicalDeviceFeatures2 features2 = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-        .pNext = &rq_features,
-    };
-
-    vkGetPhysicalDeviceFeatures2(physical_device, &features2);
-
-    return bda_features.bufferDeviceAddress && as_features.accelerationStructure && rq_features.rayQuery;
-}
-#endif
-
 bool pb_vk_context_init_device(pb_vk_context *ctx, VkSurfaceKHR surface)
 {
     if (!pick_physical_device(ctx->instance, surface, &ctx->physical_device)) {
@@ -413,47 +369,8 @@ bool pb_vk_context_init_device(pb_vk_context *ctx, VkSurfaceKHR surface)
         device_extensions[device_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     }
 
-#ifdef PEABERRY_ENABLE_RAYTRACING
-    ctx->raytracing_supported = query_raytracing_support(ctx->physical_device);
-    if (ctx->raytracing_supported) {
-        device_extensions[device_extension_count++] = VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME;
-        device_extensions[device_extension_count++] = VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
-        device_extensions[device_extension_count++] = VK_KHR_RAY_QUERY_EXTENSION_NAME;
-    } else {
-        pb_log_warn("Ray tracing requested at build time but unsupported on this GPU");
-    }
-#else
-    ctx->raytracing_supported = false;
-#endif
-
-    VkPhysicalDeviceBufferDeviceAddressFeatures bda_features = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
-        .bufferDeviceAddress = VK_FALSE,
-    };
-
-    VkPhysicalDeviceAccelerationStructureFeaturesKHR as_features = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
-        .pNext = &bda_features,
-        .accelerationStructure = VK_FALSE,
-    };
-
-    VkPhysicalDeviceRayQueryFeaturesKHR rq_features = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
-        .pNext = &as_features,
-        .rayQuery = VK_FALSE,
-    };
-
-#ifdef PEABERRY_ENABLE_RAYTRACING
-    if (ctx->raytracing_supported) {
-        bda_features.bufferDeviceAddress = VK_TRUE;
-        as_features.accelerationStructure = VK_TRUE;
-        rq_features.rayQuery = VK_TRUE;
-    }
-#endif
-
     VkPhysicalDeviceFeatures2 features2 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-        .pNext = &rq_features,
     };
 
     VkDeviceCreateInfo device_info = {

@@ -47,7 +47,6 @@ target_link_libraries(peaberry_tests
 target_compile_definitions(peaberry_tests PRIVATE
     PEABERRY_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders"
     PEABERRY_ASSET_DIR="${PEABERRY_ASSET_DIR}"
-    $<$<BOOL:${PEABERRY_ENABLE_RAYTRACING}>:PEABERRY_ENABLE_RAYTRACING=1>
 )
 
 add_dependencies(peaberry_tests peaberry_shaders)

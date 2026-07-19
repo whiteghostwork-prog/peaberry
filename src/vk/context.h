@@ -31,7 +31,6 @@ typedef struct pb_vk_context {
     uint32_t present_queue_family;
     bool validation_enabled;
     bool surface_enabled;
-    bool raytracing_supported;
 } pb_vk_context;
 
 bool pb_vk_context_init_instance(
