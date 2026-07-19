@@ -522,12 +522,6 @@ static bool create_materials(pb_context *context, cgltf_data *data, const char *
         pb_gltf_material *mat = &scene->materials[i];
         const cgltf_material *src = data->materials_count > 0 ? &data->materials[i] : NULL;
 
-        mat->material_data.light_color[0] = 4.0f;
-        mat->material_data.light_color[1] = 4.0f;
-        mat->material_data.light_color[2] = 4.0f;
-        mat->material_data.light_dir[0] = 0.5f;
-        mat->material_data.light_dir[1] = 0.8f;
-        mat->material_data.light_dir[2] = 0.4f;
         mat->material_data.albedo_factor[0] = 1.0f;
         mat->material_data.albedo_factor[1] = 1.0f;
         mat->material_data.albedo_factor[2] = 1.0f;

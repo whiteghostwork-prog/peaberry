@@ -106,6 +106,26 @@ bool pb_gltf_scene_material_uv_transform(
 
 typedef struct pb_pbr_forward_pass pb_pbr_forward_pass;
 
+/* Lights (Phase 13). Directional occupies slot 0 in the list so the shadow
+ * pass can read its direction; point lights occupy slots 1..count-1 and are
+ * unshadowed (point-light shadows are Phase 14.2). color is linear RGB
+ * pre-multiplied by intensity, matching the legacy (4,4,4) convention. */
+typedef enum {
+    PB_LIGHT_TYPE_DIRECTIONAL = 0,
+    PB_LIGHT_TYPE_POINT       = 1,
+} pb_light_type;
+
+enum { PB_LIGHT_MAX = 8 };
+
+typedef struct pb_light {
+    float position[3];   /* world-space; unused for directional            */
+    float range;         /* 0 = no attenuation (point light infinite range) */
+    float direction[3];  /* world-space; for directional/spot, ignored for point */
+    uint32_t type;       /* pb_light_type */
+    float color[3];      /* linear RGB * intensity */
+    float _pad;
+} pb_light;
+
 typedef struct pb_pbr_forward_pass_desc {
     pb_context *context;
     VkRenderPass render_pass;
@@ -130,6 +150,15 @@ void pb_pbr_forward_pass_set_camera(
     const pb_mat4 view,
     const pb_mat4 proj,
     const float camera_pos[3]);
+
+/* Upload a light list. lights[0] must be the directional (its direction drives
+ * the shadow map). Pass count=0 (or NULL) to restore the default single
+ * directional light so scenes render lit without explicit setup. count is
+ * clamped to PB_LIGHT_MAX. */
+void pb_pbr_forward_pass_set_lights(
+    pb_pbr_forward_pass *pass,
+    const pb_light *lights,
+    uint32_t count);
 
 void pb_pbr_forward_pass_set_shadows_enabled(pb_pbr_forward_pass *pass, bool enabled);
 

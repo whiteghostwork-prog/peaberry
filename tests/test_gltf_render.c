@@ -539,6 +539,129 @@ PB_TEST(test_gltf_forward_pass_pixel)
     PB_TEST_PASS();
 }
 
+/* Phase 13.1: the light loop must run end-to-end and point lights must
+ * contribute to shading. Render test_cube.gltf with the default light list
+ * (one directional) to capture a baseline center pixel, then add a bright
+ * point light next to the cube and re-render. If the point light contributes,
+ * the center pixel must change. Catches: loop not iterating (no change), UBO
+ * upload broken (no lights apply at all → baseline already black/flat), and
+ * attenuation evaluating to zero. */
+PB_TEST(test_gltf_multi_light_pixel)
+{
+    char path[512];
+    char vert_spv[512];
+    char frag_spv[512];
+    PB_ASSERT(snprintf(path, sizeof(path), "%s/models/test_cube.gltf", PEABERRY_ASSET_DIR) < (int)sizeof(path));
+    PB_ASSERT(snprintf(vert_spv, sizeof(vert_spv), "%s/pbr_forward.vert.spv", PEABERRY_SHADER_DIR) < (int)sizeof(vert_spv));
+    PB_ASSERT(snprintf(frag_spv, sizeof(frag_spv), "%s/pbr_forward.frag.spv", PEABERRY_SHADER_DIR) < (int)sizeof(frag_spv));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry multi-light test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    gltf_render_fixture fx = {0};
+    fx.context = ctx;
+    fx.extent = (VkExtent2D){ 256, 256 };
+
+    if (!create_depth_image(&fx) ||
+        !pb_rhi_texture_create_2d(
+            ctx,
+            fx.extent.width,
+            fx.extent.height,
+            1,
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            &fx.color) ||
+        !create_render_pass(&fx) ||
+        !create_framebuffer(&fx)) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("failed to create headless render target");
+    }
+
+    fx.scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    if (!fx.scene) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("test_cube.gltf missing or load failed");
+    }
+
+    fx.pass = pb_pbr_forward_pass_create(
+        &(pb_pbr_forward_pass_desc){
+            .context = ctx,
+            .render_pass = fx.render_pass,
+            .vert_spv_path = vert_spv,
+            .frag_spv_path = frag_spv,
+            .ibl_shader_dir = PEABERRY_SHADER_DIR,
+            .exposure = 1.2f,
+        });
+    PB_ASSERT(fx.pass != NULL);
+    pb_pbr_forward_pass_set_scene(fx.pass, fx.scene);
+    PB_ASSERT(pb_pbr_forward_pass_scene_is_bound(fx.pass));
+
+    /* Baseline: default light list (one directional). */
+    gltf_render_record_ctx record_ctx = { .fixture = &fx, .time_seconds = 0.0f };
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
+    uint8_t baseline[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, baseline));
+
+    /* Add a bright point light right in front of the cube so it must brighten
+     * the lit face. The directional stays at slot 0 to preserve shadows. */
+    pb_light lights[2] = {0};
+    lights[0].type = PB_LIGHT_TYPE_DIRECTIONAL;
+    lights[0].direction[0] = 0.5f;
+    lights[0].direction[1] = 0.8f;
+    lights[0].direction[2] = 0.4f;
+    lights[0].color[0] = 4.0f;
+    lights[0].color[1] = 4.0f;
+    lights[0].color[2] = 4.0f;
+    lights[1].type = PB_LIGHT_TYPE_POINT;
+    lights[1].position[0] = 0.0f;
+    lights[1].position[1] = 0.0f;
+    lights[1].position[2] = 2.0f;  /* close to the camera-facing cube face */
+    lights[1].range = 10.0f;
+    lights[1].color[0] = 30.0f;
+    lights[1].color[1] = 30.0f;
+    lights[1].color[2] = 30.0f;
+    pb_pbr_forward_pass_set_lights(fx.pass, lights, 2);
+
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
+    uint8_t with_point[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, with_point));
+
+    const int dr = (int)with_point[0] - (int)baseline[0];
+    const int dg = (int)with_point[1] - (int)baseline[1];
+    const int db = (int)with_point[2] - (int)baseline[2];
+    const int delta = dr * dr + dg * dg + db * db;
+    if (delta == 0) {
+        fprintf(
+            stderr,
+            "multi-light: center pixel unchanged after adding point light: "
+            "baseline=(%u,%u,%u,%u) with_point=(%u,%u,%u,%u)\n",
+            baseline[0], baseline[1], baseline[2], baseline[3],
+            with_point[0], with_point[1], with_point[2], with_point[3]);
+    }
+    PB_ASSERT(delta > 0);
+
+    destroy_fixture(&fx);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
 typedef struct gltf_sphere_record_ctx {
     pb_sphere_pass *pass;
     gltf_render_fixture *fixture;
@@ -705,5 +828,6 @@ void pb_run_gltf_render_tests(void)
     printf("gltf render tests\n");
     PB_RUN_TEST(test_sphere_forward_pass_pixel);
     PB_RUN_TEST(test_gltf_forward_pass_pixel);
+    PB_RUN_TEST(test_gltf_multi_light_pixel);
     PB_RUN_TEST(test_gltf_draw_with_sphere_pass);
 }

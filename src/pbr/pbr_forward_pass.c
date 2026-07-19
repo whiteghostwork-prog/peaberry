@@ -54,6 +54,7 @@ struct pb_pbr_forward_pass {
     VkDescriptorSet *descriptor_sets;
     uint32_t descriptor_set_count;
     pb_rhi_ring_buffer frame_ubo;
+    pb_rhi_ring_buffer light_ubo;
     uint32_t frame_slot;
     pb_ibl_environment ibl;
     pb_gltf_scene *scene;
@@ -77,6 +78,12 @@ struct pb_pbr_forward_pass {
     pb_mat4 external_view;
     pb_mat4 external_proj;
     float external_camera_pos[3];
+    /* external light list (set by pb_pbr_forward_pass_set_lights). When unset,
+     * a default single directional matching the legacy behavior is used so
+     * scenes render lit without explicit setup. */
+    bool has_external_lights;
+    pb_light staged_lights[PB_LIGHT_MAX];
+    uint32_t staged_light_count;
 };
 
 enum {
@@ -185,11 +192,17 @@ static bool create_descriptor_set_layout(struct pb_pbr_forward_pass *pass)
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
         },
+        {
+            .binding = 13,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 13,
+        .bindingCount = 14,
         .pBindings = bindings,
     };
 
@@ -227,6 +240,12 @@ static bool write_material_descriptor_set(
         .buffer = pb_rhi_ring_buffer_handle(&pass->frame_ubo),
         .offset = 0,
         .range = sizeof(pb_frame_ubo),
+    };
+
+    VkDescriptorBufferInfo light_info = {
+        .buffer = pb_rhi_ring_buffer_handle(&pass->light_ubo),
+        .offset = 0,
+        .range = sizeof(pb_light_list_ubo),
     };
 
     VkDescriptorBufferInfo material_info = {
@@ -409,9 +428,17 @@ static bool write_material_descriptor_set(
             .descriptorCount = 1,
             .pBufferInfo = &instance_info,
         },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = set,
+            .dstBinding = 13,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+            .descriptorCount = 1,
+            .pBufferInfo = &light_info,
+        },
     };
 
-    vkUpdateDescriptorSets(pb_context_device(pass->context), 13, writes, 0, NULL);
+    vkUpdateDescriptorSets(pb_context_device(pass->context), 14, writes, 0, NULL);
     return true;
 }
 
@@ -441,7 +468,7 @@ void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *sce
     VkDescriptorPoolSize pool_sizes[] = {
         {
             .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-            .descriptorCount = material_count,
+            .descriptorCount = 2 * material_count,
         },
         {
             .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -709,6 +736,8 @@ static bool derive_shadow_spv_path(const char *forward_vert, char *out, size_t o
     return written > 0 && (size_t)written < out_size;
 }
 
+static pb_light_list_ubo build_light_list_ubo(const struct pb_pbr_forward_pass *pass);
+
 static void fill_shadow_frame_fields(
     struct pb_pbr_forward_pass *pass,
     const pb_gltf_scene *scene,
@@ -730,8 +759,11 @@ static void fill_shadow_frame_fields(
     float bounds_max[3];
     pb_shadow_scene_bounds(scene, bounds_min, bounds_max);
 
-    float light_dir[3];
-    memcpy(light_dir, scene->materials[0].material_data.light_dir, sizeof(light_dir));
+    /* Directional lives at slot 0 of the light list; it drives the shadow
+     * frustum. build_light_list_ubo supplies the default if the caller never
+     * set lights, preserving the legacy behavior. */
+    const pb_light_list_ubo lights = build_light_list_ubo(pass);
+    const float *light_dir = lights.lights[0].direction;
 
     pb_shadow_light_matrices_fit_aabb(
         light_dir,
@@ -774,6 +806,39 @@ static pb_frame_ubo build_frame_ubo(
     return frame;
 }
 
+/* Build the light list UBO for this frame. If the caller never invoked
+ * pb_pbr_forward_pass_set_lights, fall back to a default single directional
+ * matching the legacy hardcoded light so existing scenes render lit. */
+static pb_light_list_ubo build_light_list_ubo(const struct pb_pbr_forward_pass *pass)
+{
+    pb_light_list_ubo out = {0};
+    if (pass->has_external_lights && pass->staged_light_count > 0) {
+        const uint32_t n = pass->staged_light_count > PB_LIGHT_MAX
+            ? PB_LIGHT_MAX : pass->staged_light_count;
+        for (uint32_t i = 0; i < n; ++i) {
+            const pb_light *s = &pass->staged_lights[i];
+            pb_light_ubo *d = &out.lights[i];
+            memcpy(d->position, s->position, sizeof(s->position));
+            d->range = s->range;
+            memcpy(d->direction, s->direction, sizeof(s->direction));
+            d->type = s->type;
+            memcpy(d->color, s->color, sizeof(s->color));
+        }
+        out.light_count = n;
+    } else {
+        /* Legacy default: one directional, dir (0.5,0.8,0.4), color (4,4,4). */
+        out.lights[0].direction[0] = 0.5f;
+        out.lights[0].direction[1] = 0.8f;
+        out.lights[0].direction[2] = 0.4f;
+        out.lights[0].type = PB_LIGHT_TYPE_DIRECTIONAL;
+        out.lights[0].color[0] = 4.0f;
+        out.lights[0].color[1] = 4.0f;
+        out.lights[0].color[2] = 4.0f;
+        out.light_count = 1;
+    }
+    return out;
+}
+
 static void update_frame_uniforms(
     struct pb_pbr_forward_pass *pass,
     VkExtent2D extent,
@@ -781,15 +846,21 @@ static void update_frame_uniforms(
 {
     const pb_frame_ubo frame = build_frame_ubo(pass, extent, scene);
     pb_rhi_ring_buffer_write_slot(&pass->frame_ubo, pass->frame_slot, &frame, sizeof(frame));
+
+    const pb_light_list_ubo lights = build_light_list_ubo(pass);
+    pb_rhi_ring_buffer_write_slot(&pass->light_ubo, pass->frame_slot, &lights, sizeof(lights));
 }
 
+/* Dynamic offsets must be supplied in binding-number order: binding 0 (frame
+ * UBO) then binding 13 (light UBO). */
 static void pass_descriptor_dynamic_offsets(
     const struct pb_pbr_forward_pass *pass,
     const pb_gltf_scene *scene,
-    uint32_t *out_offset)
+    uint32_t out_offsets[2])
 {
     (void)scene;
-    *out_offset = (uint32_t)pb_rhi_ring_buffer_slot_offset(&pass->frame_ubo, pass->frame_slot);
+    out_offsets[0] = (uint32_t)pb_rhi_ring_buffer_slot_offset(&pass->frame_ubo, pass->frame_slot);
+    out_offsets[1] = (uint32_t)pb_rhi_ring_buffer_slot_offset(&pass->light_ubo, pass->frame_slot);
 }
 
 static VkPipeline select_opaque_pipeline(
@@ -823,8 +894,8 @@ static void record_one_draw(
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-    uint32_t frame_dynamic_offset = 0;
-    pass_descriptor_dynamic_offsets(pass, scene, &frame_dynamic_offset);
+    uint32_t dynamic_offsets[2] = {0, 0};
+    pass_descriptor_dynamic_offsets(pass, scene, dynamic_offsets);
     vkCmdBindDescriptorSets(
         cmd,
         VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -832,8 +903,8 @@ static void record_one_draw(
         0,
         1,
         &pass->descriptor_sets[draw->material_index],
-        1,
-        &frame_dynamic_offset);
+        2,
+        dynamic_offsets);
 
     pb_pbr_push_constants push = {0};
     const bool use_instancing = instance_count > 1;
@@ -958,6 +1029,13 @@ pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
             pb_rhi_min_uniform_buffer_offset_alignment(pass->context),
             &pass->frame_ubo) ||
+        !pb_rhi_ring_buffer_create(
+            pass->context,
+            sizeof(pb_light_list_ubo),
+            PB_RHI_FRAMES_IN_FLIGHT,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            pb_rhi_min_uniform_buffer_offset_alignment(pass->context),
+            &pass->light_ubo) ||
         !pb_ibl_environment_create(
             &(pb_ibl_environment_desc){
                 .context = pass->context,
@@ -1033,6 +1111,7 @@ void pb_pbr_forward_pass_destroy(pb_pbr_forward_pass *pass)
             vkDestroyDescriptorSetLayout(device, pass->descriptor_set_layout, NULL);
         }
         pb_rhi_ring_buffer_destroy(pass->context, &pass->frame_ubo);
+        pb_rhi_ring_buffer_destroy(pass->context, &pass->light_ubo);
         pb_rhi_buffer_destroy(pass->context, &pass->instance_buffer);
         pb_ibl_environment_destroy(pass->context, &pass->ibl);
         if (pass->shadow) {
@@ -1066,6 +1145,27 @@ void pb_pbr_forward_pass_set_camera(
     pass->external_camera_pos[0] = camera_pos[0];
     pass->external_camera_pos[1] = camera_pos[1];
     pass->external_camera_pos[2] = camera_pos[2];
+}
+
+void pb_pbr_forward_pass_set_lights(
+    pb_pbr_forward_pass *pass,
+    const pb_light *lights,
+    uint32_t count)
+{
+    if (!pass) {
+        return;
+    }
+
+    if (!lights || count == 0) {
+        pass->has_external_lights = false;
+        pass->staged_light_count = 0;
+        return;
+    }
+
+    const uint32_t n = count > PB_LIGHT_MAX ? PB_LIGHT_MAX : count;
+    memcpy(pass->staged_lights, lights, n * sizeof(*lights));
+    pass->staged_light_count = n;
+    pass->has_external_lights = true;
 }
 
 void pb_pbr_forward_pass_set_shadows_enabled(pb_pbr_forward_pass *pass, bool enabled)
@@ -1179,16 +1279,16 @@ void pb_pbr_forward_pass_record_shadow_map(
 
     update_frame_uniforms(pass, extent, scene);
 
-    uint32_t frame_dynamic_offset = 0;
-    pass_descriptor_dynamic_offsets(pass, scene, &frame_dynamic_offset);
+    uint32_t dynamic_offsets[2] = {0, 0};
+    pass_descriptor_dynamic_offsets(pass, scene, dynamic_offsets);
     pb_shadow_pass_record(
         pass->shadow,
         cmd,
         scene,
         pass->descriptor_sets,
         pass->descriptor_set_count,
-        &frame_dynamic_offset,
-        1,
+        dynamic_offsets,
+        2,
         pass->instanced_draw_index,
         pass->instanced_count);
 }

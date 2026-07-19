@@ -15,12 +15,9 @@ layout(set = 0, binding = 0) uniform FrameData {
     float _pad;
 } frame;
 
-layout(set = 0, binding = 1) uniform MaterialLight {
-    vec3 light_dir;
-    float _pad0;
+layout(set = 0, binding = 1) uniform Material {
     vec3 albedo_factor;
     float metallic_factor;
-    vec3 light_color;
     float roughness_factor;
     float occlusion_strength;
     vec3 emissive_factor;
@@ -31,6 +28,24 @@ layout(set = 0, binding = 1) uniform MaterialLight {
     vec4 uv_transform_a[5];
     vec4 uv_transform_b[5];
 } material;
+
+#define PB_LIGHT_TYPE_DIRECTIONAL 0
+#define PB_LIGHT_TYPE_POINT       1
+#define PB_LIGHT_MAX              8
+
+struct pb_light {
+    vec3 position;
+    float range;
+    vec3 direction;
+    uint  type;
+    vec3 color;
+    float _pad;
+};
+
+layout(set = 0, binding = 13) uniform LightList {
+    pb_light lights[PB_LIGHT_MAX];
+    uint light_count;
+} light_list;
 
 layout(set = 0, binding = 2) uniform sampler2D u_albedo;
 layout(set = 0, binding = 3) uniform sampler2D u_metallic_roughness;
@@ -159,6 +174,40 @@ vec2 transform_uv(vec2 uv, int slot)
     return uv + params.xy;
 }
 
+/* Per-light Cook-Torrance BRDF evaluation. Returns the specular term and
+ * writes the diffuse energy fraction (kD = (1 - kS) * (1 - metallic)). Shared
+ * between the direct light loop. */
+vec3 direct_brdf(vec3 N, vec3 V, vec3 L, float metallic, float roughness, vec3 F0, out vec3 kD)
+{
+    vec3 H = normalize(V + L);
+    float NDF = distribution_ggx(N, H, roughness);
+    float G = geometry_smith(N, V, L, roughness);
+    vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
+
+    vec3 numerator = NDF * G * F;
+    float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0);
+    vec3 specular = numerator / max(denominator, 0.0001);
+
+    vec3 kS = F;
+    kD = (vec3(1.0) - kS) * (1.0 - metallic);
+    return specular;
+}
+
+/* Point-light attenuation. range <= 0 means no falloff (infinite range).
+ * Otherwise a smooth inverse-square windowed to zero at range so the light
+ * turns off cleanly at its boundary. */
+float point_attenuation(float dist, float range)
+{
+    if (range <= 0.0) {
+        return 1.0 / max(dist * dist, 1e-4);
+    }
+    float r2 = range * range;
+    float d2 = dist * dist;
+    /* Smooth window: (1 - d2/r2)^2 attenuates to 0 at d = range. */
+    float window = max(1.0 - d2 / r2, 0.0);
+    return window * window / max(d2, 1e-4);
+}
+
 void main()
 {
     vec2 uv_albedo = transform_uv(v_uv, 0);
@@ -193,35 +242,55 @@ void main()
     }
 
     vec3 V = normalize(frame.camera_pos - v_world_pos);
-    vec3 L = normalize(material.light_dir);
-    vec3 H = normalize(V + L);
 
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
-    float NDF = distribution_ggx(N, H, roughness);
-    float G = geometry_smith(N, V, L, roughness);
-    vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
 
-    vec3 numerator = NDF * G * F;
-    float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0);
-    vec3 specular = numerator / max(denominator, 0.0001);
+    /* Direct lighting: loop over the bound light list. Slot 0 is the directional
+     * (the only shadowed light); slots 1..n are unshadowed point lights. */
+    vec3 direct = vec3(0.0);
+    for (uint i = 0; i < light_list.light_count && i < PB_LIGHT_MAX; ++i) {
+        pb_light light = light_list.lights[i];
 
-    vec3 kS = F;
-    vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
-    float NdotL = max(dot(N, L), 0.0);
+        vec3 L;
+        float attenuation;
+        if (light.type == PB_LIGHT_TYPE_DIRECTIONAL) {
+            L = normalize(light.direction);
+            attenuation = 1.0;
+        } else { /* PB_LIGHT_TYPE_POINT */
+            vec3 to_light = light.position - v_world_pos;
+            float dist = length(to_light);
+            L = to_light / max(dist, 1e-4);
+            attenuation = point_attenuation(dist, light.range);
+        }
 
-    vec3 radiance = material.light_color;
-    float shadow = calc_shadow(v_world_pos, N, L);
-    vec3 direct = (kD * albedo / PI + specular) * radiance * NdotL * shadow;
+        float NdotL = max(dot(N, L), 0.0);
+        if (NdotL <= 0.0) {
+            continue;
+        }
+
+        vec3 kD;
+        vec3 specular = direct_brdf(N, V, L, metallic, roughness, F0, kD);
+
+        /* Only the directional at slot 0 is shadowed. Point lights are
+         * unshadowed (point-light shadows are Phase 14.2). */
+        float shadow = (i == 0u) ? calc_shadow(v_world_pos, N, L) : 1.0;
+
+        vec3 radiance = light.color * attenuation;
+        direct += (kD * albedo / PI + specular) * radiance * NdotL * shadow;
+    }
+
+    /* Ambient kD for IBL: use the camera-view reflection approximation. */
+    vec3 R = reflect(-V, N);
+    vec3 kD_ambient = (vec3(1.0) - fresnel_schlick_roughness(max(dot(N, V), 0.0), F0, roughness)) * (1.0 - metallic);
 
     vec3 irradiance = texture(u_irradiance, N).rgb;
     vec3 diffuse_ibl = irradiance * albedo;
 
-    vec3 R = reflect(-V, N);
     vec3 prefiltered = textureLod(u_prefilter, R, roughness * MAX_REFLECTION_LOD).rgb;
     vec2 brdf = texture(u_brdf_lut, vec2(max(dot(N, V), 0.0), roughness)).rg;
     vec3 specular_ibl = prefiltered * (fresnel_schlick_roughness(max(dot(N, V), 0.0), F0, roughness) * brdf.x + brdf.y);
 
-    vec3 ambient = kD * diffuse_ibl + specular_ibl;
+    vec3 ambient = kD_ambient * diffuse_ibl + specular_ibl;
 
     /* occlusion: sample R channel, mix with strength, modulate ambient + direct */
     float occlusion = mix(1.0, texture(u_occlusion, uv_occlusion).r, material.occlusion_strength);
@@ -244,7 +313,8 @@ void main()
                 proj_coords.z < 0.0 || proj_coords.z > 1.0) {
                 color = mix(color, vec3(0.2, 0.35, 0.9), 0.45);
             } else {
-                const float lit = calc_shadow_from_proj(proj_coords, N, L);
+                const vec3 L_dir = normalize(light_list.lights[0].direction);
+                const float lit = calc_shadow_from_proj(proj_coords, N, L_dir);
                 /* Neutral darken — preserve albedo hue, no color cast. */
                 color *= mix(0.35, 1.0, lit);
             }

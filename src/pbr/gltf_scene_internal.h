@@ -17,11 +17,8 @@
 #include <volk.h>
 
 typedef struct pb_material_ubo {
-    float light_dir[3];
-    float _pad0;
     float albedo_factor[3];
     float metallic_factor;
-    float light_color[3];
     float roughness_factor;
     float occlusion_strength;
     float emissive_factor[3];
@@ -32,6 +29,26 @@ typedef struct pb_material_ubo {
     float uv_transform_a[5][4];
     float uv_transform_b[5][4];
 } pb_material_ubo;
+
+/* GPU-side light list. Directional occupies slot 0 so the shadow pass can read
+ * lights[0].direction. Point lights occupy slots 1..light_count-1 and are
+ * unshadowed (point-light shadows are Phase 14.2). Mirrors the public pb_light
+ * struct in peaberry_gltf.h — keep the field layout identical (std140 vec4
+ * triples). */
+typedef struct pb_light_ubo {
+    float position[3];
+    float range;
+    float direction[3];
+    uint32_t type;
+    float color[3];
+    float _pad;
+} pb_light_ubo;
+
+typedef struct pb_light_list_ubo {
+    pb_light_ubo lights[PB_LIGHT_MAX];
+    uint32_t light_count;
+    uint32_t _pad[3];
+} pb_light_list_ubo;
 
 typedef struct pb_gltf_material {
     pb_gltf_alpha_mode alpha_mode;
