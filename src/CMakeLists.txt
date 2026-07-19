@@ -23,6 +23,7 @@ add_library(peaberry STATIC
     pbr/draw_sort.c
     pbr/frustum_cull.c
     pbr/pbr_forward_pass.c
+    pbr/post_pass.c
     pbr/shadow_pass.c
     pbr/sphere_pass.c
     load/gltf.c

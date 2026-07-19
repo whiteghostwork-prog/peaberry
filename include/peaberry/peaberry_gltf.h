@@ -198,4 +198,31 @@ void pb_pbr_forward_pass_record(
     const pb_gltf_scene *scene,
     float time_seconds);
 
+/* Phase 15.1 post-processing pass. Tonemaps the HDR scene color produced by
+ * the forward pass into the caller's LDR target. The caller is responsible
+ * for: rendering the forward pass into an HDR (e.g. R16G16B16A16_SFLOAT)
+ * color target, transitioning that target to SHADER_READ_ONLY_OPTIMAL, then
+ * recording the post pass inside a render pass targeting the LDR output
+ * (swapchain or readback target). Present via an sRGB swapchain format so
+ * the sRGB encode happens in the output unit, not the shader. */
+typedef struct pb_pbr_post_pass pb_pbr_post_pass;
+
+typedef struct pb_pbr_post_pass_desc {
+    pb_context *context;
+    VkRenderPass render_pass;
+    const char *vert_spv_path;   /* resolves to fullscreen.vert.spv */
+    const char *frag_spv_path;   /* resolves to tonemap.frag.spv    */
+    float exposure;              /* HDR multiplier applied before ACES */
+} pb_pbr_post_pass_desc;
+
+pb_pbr_post_pass *pb_pbr_post_pass_create(const pb_pbr_post_pass_desc *desc);
+void pb_pbr_post_pass_destroy(pb_pbr_post_pass *pass);
+
+void pb_pbr_post_pass_record(
+    pb_pbr_post_pass *pass,
+    VkCommandBuffer cmd,
+    VkExtent2D extent,
+    VkImageView hdr_scene_view,
+    VkSampler hdr_scene_sampler);
+
 #endif

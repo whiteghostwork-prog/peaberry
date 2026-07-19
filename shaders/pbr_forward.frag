@@ -103,16 +103,6 @@ vec3 fresnel_schlick_roughness(float cos_theta, vec3 F0, float roughness)
     return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - cos_theta, 5.0);
 }
 
-vec3 aces_tonemap(vec3 color)
-{
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
-}
-
 /* Shadow map UV + depth in light clip space (xy in [0,1] after perspective divide). */
 bool shadow_light_proj(vec3 world_pos, out vec3 proj_coords)
 {
@@ -321,8 +311,8 @@ void main()
         }
     }
 
-    color = aces_tonemap(color * frame.exposure);
-    color = pow(color, vec3(1.0 / 2.2));
+    /* Linear HDR output — tonemap + sRGB encode happen in the post pass
+     * (Phase 15.1). Exposure has moved to the post pass as well. */
 
     if (material.alpha_mode > 0.5 && material.alpha_mode < 1.5) {
         if (alpha < material.alpha_cutoff) {
