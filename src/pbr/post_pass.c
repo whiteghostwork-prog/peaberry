@@ -22,6 +22,14 @@ typedef struct pb_pbr_post_pass {
     VkShaderModule vert_module;
     VkShaderModule frag_module;
     float exposure;
+    /* Cached (view, sampler) currently bound to descriptor_set. The HDR scene
+     * view is usually the same every frame, so we skip vkUpdateDescriptorSets
+     * when unchanged — this also avoids the "descriptor set in use" race that
+     * would otherwise occur when re-writing a set referenced by a previous
+     * frame's still-pending command buffer. */
+    VkImageView bound_view;
+    VkSampler bound_sampler;
+    bool descriptor_written;
 } pb_pbr_post_pass;
 
 static bool create_descriptor_set_layout(pb_context *context, VkDescriptorSetLayout *out_layout)
@@ -265,23 +273,33 @@ void pb_pbr_post_pass_record(
     }
 
     /* Update the descriptor set to point at this frame's HDR scene color. The
-     * view + sampler change per frame, so we re-write the binding here. */
-    VkDescriptorImageInfo image_info = {
-        .sampler = hdr_scene_sampler,
-        .imageView = hdr_scene_view,
-        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-    };
+     * view + sampler are usually the same every frame (one HDR target), so we
+     * skip vkUpdateDescriptorSets when unchanged. This also avoids re-writing
+     * a descriptor set that a previous frame's still-pending command buffer
+     * references (which the validator flags as a hazard). */
+    if (!pass->descriptor_written ||
+        pass->bound_view != hdr_scene_view ||
+        pass->bound_sampler != hdr_scene_sampler) {
+        VkDescriptorImageInfo image_info = {
+            .sampler = hdr_scene_sampler,
+            .imageView = hdr_scene_view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
 
-    VkWriteDescriptorSet write = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = pass->descriptor_set,
-        .dstBinding = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = 1,
-        .pImageInfo = &image_info,
-    };
+        VkWriteDescriptorSet write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
+            .dstBinding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &image_info,
+        };
 
-    vkUpdateDescriptorSets(pb_context_device(pass->context), 1, &write, 0, NULL);
+        vkUpdateDescriptorSets(pb_context_device(pass->context), 1, &write, 0, NULL);
+        pass->bound_view = hdr_scene_view;
+        pass->bound_sampler = hdr_scene_sampler;
+        pass->descriptor_written = true;
+    }
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass->pipeline);
     vkCmdBindDescriptorSets(
