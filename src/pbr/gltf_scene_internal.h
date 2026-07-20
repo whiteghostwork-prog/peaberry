@@ -41,7 +41,10 @@ typedef struct pb_light_ubo {
     float direction[3];
     uint32_t type;
     float color[3];
-    float _pad;
+    uint32_t shadow_map_index;
+    /* Pad to 64 bytes so the C array stride matches std140's struct-array
+     * stride rounding (GLSL pb_light is 56 bytes but rounds up to 64). */
+    float _pad[4];
 } pb_light_ubo;
 
 typedef struct pb_light_list_ubo {

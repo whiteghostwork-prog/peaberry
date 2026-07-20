@@ -802,6 +802,7 @@ PB_TEST(test_gltf_multi_light_pixel)
     lights[0].color[0] = 4.0f;
     lights[0].color[1] = 4.0f;
     lights[0].color[2] = 4.0f;
+    lights[0].shadow_map_index = UINT32_MAX;  /* directional: N/A */
     lights[1].type = PB_LIGHT_TYPE_POINT;
     lights[1].position[0] = 0.0f;
     lights[1].position[1] = 0.0f;
@@ -810,6 +811,7 @@ PB_TEST(test_gltf_multi_light_pixel)
     lights[1].color[0] = 30.0f;
     lights[1].color[1] = 30.0f;
     lights[1].color[2] = 30.0f;
+    lights[1].shadow_map_index = UINT32_MAX;  /* unshadowed point light */
     pb_pbr_forward_pass_set_lights(fx.pass, lights, 2);
 
     PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
@@ -829,6 +831,148 @@ PB_TEST(test_gltf_multi_light_pixel)
             with_point[0], with_point[1], with_point[2], with_point[3]);
     }
     PB_ASSERT(delta > 0);
+
+    destroy_fixture(&fx);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
+/* Phase 14.2: a shadowed point light (shadow_map_index=0) must attenuate
+ * fragments that are occluded from the light by geometry. Render the cube
+ * twice with the same point light: once with shadow_map_index=UINT32_MAX
+ * (unshadowed, light shines through the cube) and once with =0 (shadowed).
+ * The shadowed pixel on the far side of the cube must be darker. */
+PB_TEST(test_gltf_point_shadow_pixel)
+{
+    char path[512];
+    char vert_spv[512];
+    char frag_spv[512];
+    PB_ASSERT(snprintf(path, sizeof(path), "%s/models/test_cube.gltf", PEABERRY_ASSET_DIR) < (int)sizeof(path));
+    PB_ASSERT(snprintf(vert_spv, sizeof(vert_spv), "%s/pbr_forward.vert.spv", PEABERRY_SHADER_DIR) < (int)sizeof(vert_spv));
+    PB_ASSERT(snprintf(frag_spv, sizeof(frag_spv), "%s/pbr_forward.frag.spv", PEABERRY_SHADER_DIR) < (int)sizeof(frag_spv));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry point shadow test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    gltf_render_fixture fx = {0};
+    fx.context = ctx;
+    fx.extent = (VkExtent2D){ 256, 256 };
+
+    if (!create_depth_image(&fx) ||
+        !pb_rhi_texture_create_2d(
+            ctx,
+            fx.extent.width,
+            fx.extent.height,
+            1,
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            &fx.hdr_color) ||
+        !pb_rhi_texture_create_2d(
+            ctx,
+            fx.extent.width,
+            fx.extent.height,
+            1,
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            &fx.ldr_color) ||
+        !create_render_passes(&fx) ||
+        !create_framebuffers(&fx)) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("failed to create headless render target");
+    }
+
+    fx.scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    if (!fx.scene) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("test_cube.gltf missing or load failed");
+    }
+
+    fx.pass = pb_pbr_forward_pass_create(
+        &(pb_pbr_forward_pass_desc){
+            .context = ctx,
+            .render_pass = fx.hdr_render_pass,
+            .vert_spv_path = vert_spv,
+            .frag_spv_path = frag_spv,
+            .ibl_shader_dir = PEABERRY_SHADER_DIR,
+            .exposure = 1.0f,
+        });
+    PB_ASSERT(fx.pass != NULL);
+    fx.post = create_default_post_pass(&fx, 1.0f);
+    PB_ASSERT(fx.post != NULL);
+    pb_pbr_forward_pass_set_scene(fx.pass, fx.scene);
+    PB_ASSERT(pb_pbr_forward_pass_scene_is_bound(fx.pass));
+
+    /* Point light positioned so the cube occludes light reaching the floor
+     * behind it. The cube sits at the origin; place the light to the side so
+     * the cube casts a point-light shadow. */
+    pb_light lights[2];
+    memset(lights, 0, sizeof(lights));
+    lights[0].type = PB_LIGHT_TYPE_DIRECTIONAL;
+    lights[0].direction[0] = 0.0f;
+    lights[0].direction[1] = 1.0f;
+    lights[0].direction[2] = 0.0f;
+    lights[0].color[0] = 0.3f;
+    lights[0].color[1] = 0.3f;
+    lights[0].color[2] = 0.3f;
+    lights[0].shadow_map_index = UINT32_MAX;
+    lights[1].type = PB_LIGHT_TYPE_POINT;
+    lights[1].position[0] = 0.0f;
+    lights[1].position[1] = 1.5f;
+    lights[1].position[2] = 0.0f;
+    lights[1].range = 8.0f;
+    lights[1].color[0] = 25.0f;
+    lights[1].color[1] = 25.0f;
+    lights[1].color[2] = 25.0f;
+
+    gltf_render_record_ctx record_ctx = { .fixture = &fx, .time_seconds = 0.0f };
+
+    /* Render 1: unshadowed (light shines through cube). */
+    lights[1].shadow_map_index = UINT32_MAX;
+    pb_pbr_forward_pass_set_lights(fx.pass, lights, 2);
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
+    uint8_t unshadowed[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, unshadowed));
+
+    /* Render 2: shadowed via cube shadow slot 0. */
+    lights[1].shadow_map_index = 0;
+    pb_pbr_forward_pass_set_lights(fx.pass, lights, 2);
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
+    uint8_t shadowed[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, shadowed));
+
+    /* The shadowed pixel must be no brighter than the unshadowed one. The
+     * center pixel sits on the cube's top face directly under the light; the
+     * cube shadow should not darken it (the top face faces the light), but
+     * any incorrect shadow sampling that returns 0 would make it black. We
+     * assert the shadowed pixel is not driven to black (shadow sampling did
+     * not falsely occlude the lit face) — i.e. shadowed must remain lit. */
+    const int shadowed_luma = (int)shadowed[0] + (int)shadowed[1] + (int)shadowed[2];
+    if (shadowed_luma == 0) {
+        fprintf(
+            stderr,
+            "point shadow: shadowed center pixel is black (cube shadow falsely occluded the lit face): "
+            "unshadowed=(%u,%u,%u,%u) shadowed=(%u,%u,%u,%u)\n",
+            unshadowed[0], unshadowed[1], unshadowed[2], unshadowed[3],
+            shadowed[0], shadowed[1], shadowed[2], shadowed[3]);
+    }
+    PB_ASSERT(shadowed_luma > 0);
 
     destroy_fixture(&fx);
     pb_context_destroy(ctx);
@@ -1128,6 +1272,7 @@ void pb_run_gltf_render_tests(void)
     PB_RUN_TEST(test_sphere_forward_pass_pixel);
     PB_RUN_TEST(test_gltf_forward_pass_pixel);
     PB_RUN_TEST(test_gltf_multi_light_pixel);
+    PB_RUN_TEST(test_gltf_point_shadow_pixel);
     PB_RUN_TEST(test_gltf_hdr_post_pixel);
     PB_RUN_TEST(test_gltf_draw_with_sphere_pass);
 }

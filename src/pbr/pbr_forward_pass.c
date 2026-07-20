@@ -11,6 +11,7 @@
 #include "pbr/gltf_scene_internal.h"
 #include "pbr/ibl.h"
 #include "pbr/shadow_pass.h"
+#include "pbr/point_shadow_pass.h"
 #include "pbr/vertex.h"
 #include "rhi/alloc.h"
 #include "rhi/buffer.h"
@@ -59,6 +60,7 @@ struct pb_pbr_forward_pass {
     pb_ibl_environment ibl;
     pb_gltf_scene *scene;
     pb_shadow_pass *shadow;
+    pb_point_shadow_pass *point_shadow;
     VkShaderModule vert_module;
     VkShaderModule frag_module;
     float exposure;
@@ -198,11 +200,23 @@ static bool create_descriptor_set_layout(struct pb_pbr_forward_pass *pass)
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
+        {
+            .binding = 14,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = PB_POINT_SHADOW_MAX,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 15,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 14,
+        .bindingCount = 16,
         .pBindings = bindings,
     };
 
@@ -246,6 +260,24 @@ static bool write_material_descriptor_set(
         .buffer = pb_rhi_ring_buffer_handle(&pass->light_ubo),
         .offset = 0,
         .range = sizeof(pb_light_list_ubo),
+    };
+
+    /* Binding 14: the 4 point-light cube shadow views + shared sampler.
+     * pImageInfo is an array of PB_POINT_SHADOW_MAX entries. */
+    VkDescriptorImageInfo point_shadow_infos[PB_POINT_SHADOW_MAX];
+    const VkImageView *point_shadow_views = pb_point_shadow_pass_views(pass->point_shadow);
+    const VkSampler point_shadow_sampler = pb_point_shadow_pass_sampler(pass->point_shadow);
+    for (uint32_t i = 0; i < PB_POINT_SHADOW_MAX; ++i) {
+        point_shadow_infos[i].sampler = point_shadow_sampler;
+        point_shadow_infos[i].imageView = point_shadow_views ? point_shadow_views[i] : VK_NULL_HANDLE;
+        point_shadow_infos[i].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    }
+
+    /* Binding 15: point-shadow per-face UBO (written per face during record). */
+    VkDescriptorBufferInfo point_shadow_frame_info = {
+        .buffer = pb_point_shadow_pass_frame_buffer(pass->point_shadow),
+        .offset = 0,
+        .range = pb_point_shadow_pass_frame_ubo_size(),
     };
 
     VkDescriptorBufferInfo material_info = {
@@ -436,9 +468,25 @@ static bool write_material_descriptor_set(
             .descriptorCount = 1,
             .pBufferInfo = &light_info,
         },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = set,
+            .dstBinding = 14,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = PB_POINT_SHADOW_MAX,
+            .pImageInfo = point_shadow_infos,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = set,
+            .dstBinding = 15,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+            .descriptorCount = 1,
+            .pBufferInfo = &point_shadow_frame_info,
+        },
     };
 
-    vkUpdateDescriptorSets(pb_context_device(pass->context), 14, writes, 0, NULL);
+    vkUpdateDescriptorSets(pb_context_device(pass->context), 16, writes, 0, NULL);
     return true;
 }
 
@@ -468,7 +516,7 @@ void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *sce
     VkDescriptorPoolSize pool_sizes[] = {
         {
             .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-            .descriptorCount = 2 * material_count,
+            .descriptorCount = 3 * material_count,
         },
         {
             .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -476,7 +524,8 @@ void pb_pbr_forward_pass_set_scene(pb_pbr_forward_pass *pass, pb_gltf_scene *sce
         },
         {
             .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 9 * material_count,
+            /* 9 forward textures + 4 point-shadow cube samplers (binding 14). */
+            .descriptorCount = (9 + PB_POINT_SHADOW_MAX) * material_count,
         },
         {
             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -812,6 +861,11 @@ static pb_frame_ubo build_frame_ubo(
 static pb_light_list_ubo build_light_list_ubo(const struct pb_pbr_forward_pass *pass)
 {
     pb_light_list_ubo out = {0};
+    /* Default every light to "unshadowed point-light" sentinel so the
+     * zero-init from {0} doesn't accidentally claim cube shadow slot 0. */
+    for (uint32_t i = 0; i < PB_LIGHT_MAX; ++i) {
+        out.lights[i].shadow_map_index = UINT32_MAX;
+    }
     if (pass->has_external_lights && pass->staged_light_count > 0) {
         const uint32_t n = pass->staged_light_count > PB_LIGHT_MAX
             ? PB_LIGHT_MAX : pass->staged_light_count;
@@ -823,6 +877,7 @@ static pb_light_list_ubo build_light_list_ubo(const struct pb_pbr_forward_pass *
             memcpy(d->direction, s->direction, sizeof(s->direction));
             d->type = s->type;
             memcpy(d->color, s->color, sizeof(s->color));
+            d->shadow_map_index = s->shadow_map_index;
         }
         out.light_count = n;
     } else {
@@ -853,14 +908,22 @@ static void update_frame_uniforms(
 
 /* Dynamic offsets must be supplied in binding-number order: binding 0 (frame
  * UBO) then binding 13 (light UBO). */
+/* Dynamic offsets must be supplied in binding-number order across all
+ * UNIFORM_BUFFER_DYNAMIC bindings in the descriptor set:
+ *   binding 0  (frame UBO)
+ *   binding 13 (light list UBO)
+ *   binding 15 (point-shadow per-face UBO) */
 static void pass_descriptor_dynamic_offsets(
     const struct pb_pbr_forward_pass *pass,
     const pb_gltf_scene *scene,
-    uint32_t out_offsets[2])
+    uint32_t out_offsets[3])
 {
     (void)scene;
     out_offsets[0] = (uint32_t)pb_rhi_ring_buffer_slot_offset(&pass->frame_ubo, pass->frame_slot);
     out_offsets[1] = (uint32_t)pb_rhi_ring_buffer_slot_offset(&pass->light_ubo, pass->frame_slot);
+    out_offsets[2] = pass->point_shadow
+        ? (uint32_t)pb_point_shadow_pass_frame_slot_offset(pass->point_shadow)
+        : 0;
 }
 
 static VkPipeline select_opaque_pipeline(
@@ -894,7 +957,7 @@ static void record_one_draw(
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-    uint32_t dynamic_offsets[2] = {0, 0};
+    uint32_t dynamic_offsets[3] = {0, 0, 0};
     pass_descriptor_dynamic_offsets(pass, scene, dynamic_offsets);
     vkCmdBindDescriptorSets(
         cmd,
@@ -903,7 +966,7 @@ static void record_one_draw(
         0,
         1,
         &pass->descriptor_sets[draw->material_index],
-        2,
+        3,
         dynamic_offsets);
 
     pb_pbr_push_constants push = {0};
@@ -1066,6 +1129,26 @@ pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *
         }
     }
 
+    /* Point-light shadow cubes (Phase 14.2). Same derive-shadow-path trick
+     * for the cube-specific vert/frag shaders. */
+    char point_shadow_vert_spv[512];
+    char point_shadow_frag_spv[512];
+    if (derive_shadow_spv_path(desc->vert_spv_path, point_shadow_vert_spv, sizeof(point_shadow_vert_spv), "point_shadow_depth.vert.spv") &&
+        derive_shadow_spv_path(desc->vert_spv_path, point_shadow_frag_spv, sizeof(point_shadow_frag_spv), "point_shadow_depth.frag.spv")) {
+        if (!pb_point_shadow_pass_create(
+                &(pb_point_shadow_pass_desc){
+                    .context = pass->context,
+                    .pipeline_layout = pass->pipeline_layout,
+                    .vert_spv_path = point_shadow_vert_spv,
+                    .frag_spv_path = point_shadow_frag_spv,
+                },
+                &pass->point_shadow)) {
+            pb_log_error("Failed to create point-light shadow pass");
+            pb_pbr_forward_pass_destroy(pass);
+            return NULL;
+        }
+    }
+
     pass->prefilter_max_lod = pass->ibl.prefilter_max_lod;
 
     if (desc->scene) {
@@ -1117,6 +1200,10 @@ void pb_pbr_forward_pass_destroy(pb_pbr_forward_pass *pass)
         if (pass->shadow) {
             pb_shadow_pass_destroy(pass->shadow);
             pass->shadow = NULL;
+        }
+        if (pass->point_shadow) {
+            pb_point_shadow_pass_destroy(pass->point_shadow);
+            pass->point_shadow = NULL;
         }
         if (pass->vert_module) {
             vkDestroyShaderModule(device, pass->vert_module, NULL);
@@ -1278,8 +1365,9 @@ void pb_pbr_forward_pass_record_shadow_map(
     }
 
     update_frame_uniforms(pass, extent, scene);
+    pb_point_shadow_pass_set_frame_slot(pass->point_shadow, pass->frame_slot);
 
-    uint32_t dynamic_offsets[2] = {0, 0};
+    uint32_t dynamic_offsets[3] = {0, 0, 0};
     pass_descriptor_dynamic_offsets(pass, scene, dynamic_offsets);
     pb_shadow_pass_record(
         pass->shadow,
@@ -1288,9 +1376,36 @@ void pb_pbr_forward_pass_record_shadow_map(
         pass->descriptor_sets,
         pass->descriptor_set_count,
         dynamic_offsets,
-        2,
+        3,
         pass->instanced_draw_index,
         pass->instanced_count);
+
+    /* Render point-light shadow cubes for any staged point light that claimed
+     * a cube slot via shadow_map_index. */
+    if (pass->point_shadow) {
+        const pb_light_list_ubo lights = build_light_list_ubo(pass);
+        for (uint32_t i = 0; i < lights.light_count; ++i) {
+            const pb_light_ubo *L = &lights.lights[i];
+            if (L->type != PB_LIGHT_TYPE_POINT ||
+                L->shadow_map_index >= PB_POINT_SHADOW_MAX ||
+                L->range <= 0.1f) {
+                continue;
+            }
+            pb_point_shadow_pass_record(
+                pass->point_shadow,
+                cmd,
+                scene,
+                L->shadow_map_index,
+                L->position,
+                L->range,
+                pass->descriptor_sets,
+                pass->descriptor_set_count,
+                dynamic_offsets,
+                3,
+                pass->instanced_draw_index,
+                pass->instanced_count);
+        }
+    }
 }
 
 void pb_pbr_forward_pass_record(

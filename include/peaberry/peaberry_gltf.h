@@ -107,15 +107,20 @@ bool pb_gltf_scene_material_uv_transform(
 typedef struct pb_pbr_forward_pass pb_pbr_forward_pass;
 
 /* Lights (Phase 13). Directional occupies slot 0 in the list so the shadow
- * pass can read its direction; point lights occupy slots 1..count-1 and are
- * unshadowed (point-light shadows are Phase 14.2). color is linear RGB
- * pre-multiplied by intensity, matching the legacy (4,4,4) convention. */
+ * pass can read its direction; point lights occupy slots 1..count-1.
+ * color is linear RGB pre-multiplied by intensity, matching the legacy
+ * (4,4,4) convention. Point lights opt into shadowing (Phase 14.2) by
+ * setting shadow_map_index to a value < PB_POINT_SHADOW_MAX; otherwise
+ * it must be UINT32_MAX (unshadowed). */
 typedef enum {
     PB_LIGHT_TYPE_DIRECTIONAL = 0,
     PB_LIGHT_TYPE_POINT       = 1,
 } pb_light_type;
 
-enum { PB_LIGHT_MAX = 8 };
+enum {
+    PB_LIGHT_MAX = 8,
+    PB_POINT_SHADOW_MAX = 4,  /* max simultaneous shadowed point lights */
+};
 
 typedef struct pb_light {
     float position[3];   /* world-space; unused for directional            */
@@ -123,7 +128,10 @@ typedef struct pb_light {
     float direction[3];  /* world-space; for directional/spot, ignored for point */
     uint32_t type;       /* pb_light_type */
     float color[3];      /* linear RGB * intensity */
-    float _pad;
+    uint32_t shadow_map_index;  /* point lights: <PB_POINT_SHADOW_MAX to claim a cube shadow slot; UINT32_MAX = unshadowed */
+    /* Pad to 64 bytes to match the GPU-side pb_light_ubo / GLSL std140
+     * struct-array stride. Future fields go in this pad. */
+    float _pad[4];
 } pb_light;
 
 typedef struct pb_pbr_forward_pass_desc {

@@ -75,6 +75,8 @@ peaberry_compile_glsl(PEABERRY_SHADER_SPIRV
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/prefilter.frag
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow_depth.vert
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow_depth.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/point_shadow_depth.vert
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/point_shadow_depth.frag
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/tonemap.frag
 )
 

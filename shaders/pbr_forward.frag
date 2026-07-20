@@ -39,13 +39,20 @@ struct pb_light {
     vec3 direction;
     uint  type;
     vec3 color;
-    float _pad;
+    uint  shadow_map_index;   /* < PB_POINT_SHADOW_MAX: claim a cube shadow slot */
+    vec4 _pad;                /* pad to 64 bytes to match the C struct / std140 stride */
 };
 
 layout(set = 0, binding = 13) uniform LightList {
     pb_light lights[PB_LIGHT_MAX];
     uint light_count;
 } light_list;
+
+/* Phase 14.2: per-point-light shadow cube array. Each cube stores normalized
+ * linear distance from its owning light; sampled as samplerCubeShadow with
+ * compare ref = distance/range. */
+#define PB_POINT_SHADOW_MAX 4
+layout(set = 0, binding = 14) uniform samplerCubeShadow u_point_shadows[PB_POINT_SHADOW_MAX];
 
 layout(set = 0, binding = 2) uniform sampler2D u_albedo;
 layout(set = 0, binding = 3) uniform sampler2D u_metallic_roughness;
@@ -261,9 +268,19 @@ void main()
         vec3 kD;
         vec3 specular = direct_brdf(N, V, L, metallic, roughness, F0, kD);
 
-        /* Only the directional at slot 0 is shadowed. Point lights are
-         * unshadowed (point-light shadows are Phase 14.2). */
-        float shadow = (i == 0u) ? calc_shadow(v_world_pos, N, L) : 1.0;
+        /* Shadow factor: directional at slot 0 uses the 2D shadow map; point
+         * lights sample their claimed cube shadow slot (Phase 14.2). Cube
+         * stores normalized linear distance from the light; we compare the
+         * fragment's normalized distance against it. */
+        float shadow = 1.0;
+        if (i == 0u) {
+            shadow = calc_shadow(v_world_pos, N, L);
+        } else if (light.type == PB_LIGHT_TYPE_POINT && light.shadow_map_index < PB_POINT_SHADOW_MAX) {
+            vec3 to_frag = v_world_pos - light.position;
+            float dist = length(to_frag);
+            float ref = dist / max(light.range, 1e-4);
+            shadow = texture(u_point_shadows[light.shadow_map_index], vec4(to_frag, ref));
+        }
 
         vec3 radiance = light.color * attenuation;
         direct += (kD * albedo / PI + specular) * radiance * NdotL * shadow;
