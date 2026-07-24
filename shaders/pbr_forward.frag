@@ -20,11 +20,14 @@ layout(set = 0, binding = 1) uniform Material {
     float metallic_factor;
     float roughness_factor;
     float occlusion_strength;
-    vec3 emissive_factor;
+    vec3 emissive_factor;       /* 2 floats of std140 padding before this */
     float alpha_cutoff;
     float base_color_alpha;
     float alpha_mode;
     float double_sided;
+    float emissive_strength;    /* KHR_materials_emissive_strength (default 1.0) */
+    float unlit;                /* KHR_materials_unlit (0.0 / 1.0) */
+    /* 3 floats of std140 padding before uv_transform_a (vec4 align) */
     vec4 uv_transform_a[5];
     vec4 uv_transform_b[5];
 } material;
@@ -302,10 +305,18 @@ void main()
     /* occlusion: sample R channel, mix with strength, modulate ambient + direct */
     float occlusion = mix(1.0, texture(u_occlusion, uv_occlusion).r, material.occlusion_strength);
 
-    vec3 color = (direct + ambient) * occlusion;
+    vec3 color;
+    if (material.unlit > 0.5) {
+        /* KHR_materials_unlit: output base color directly — no PBR lighting,
+         * IBL, shadows, or occlusion. Only emissive is added below. */
+        color = albedo;
+    } else {
+        color = (direct + ambient) * occlusion;
+    }
 
-    /* emissive: add unlit contribution */
-    vec3 emissive = texture(u_emissive, uv_emissive).rgb * material.emissive_factor;
+    /* emissive: scaled by KHR_materials_emissive_strength (default 1.0). Adds
+     * to both lit and unlit materials. */
+    vec3 emissive = texture(u_emissive, uv_emissive).rgb * material.emissive_factor * material.emissive_strength;
     color += emissive;
 
     if (frame.shadow_debug > 0.5) {

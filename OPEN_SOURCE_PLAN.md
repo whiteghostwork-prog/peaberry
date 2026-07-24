@@ -119,7 +119,7 @@ New tracks addressing the gaps that currently keep peaberry from reading as a co
 
 | Sub | Goal | Owner |
 |-----|------|-------|
-| 16.1 | `KHR_materials_unlit` + `KHR_materials_emissive_strength` (trivial; huge asset coverage) | peaberry |
+| 16.1 | `KHR_materials_unlit` + `KHR_materials_emissive_strength` (trivial; huge asset coverage) — *done* | peaberry |
 | 16.2 | `KHR_materials_ior` + `KHR_materials_specular` | peaberry |
 | 16.3 | `KHR_materials_sheen` | peaberry |
 | 16.4 | `KHR_materials_clearcoat` (second GGX lobe) | peaberry |

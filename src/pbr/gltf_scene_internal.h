@@ -17,17 +17,27 @@
 #include <volk.h>
 
 typedef struct pb_material_ubo {
-    float albedo_factor[3];
-    float metallic_factor;
-    float roughness_factor;
-    float occlusion_strength;
-    float emissive_factor[3];
-    float alpha_cutoff;
-    float base_color_alpha;
-    float alpha_mode;
-    float double_sided;
-    float uv_transform_a[5][4];
-    float uv_transform_b[5][4];
+    float albedo_factor[3];   /* vec3 @ 0  */
+    float metallic_factor;    /* float @ 12 */
+    float roughness_factor;   /* float @ 16 */
+    float occlusion_strength; /* float @ 20 */
+    /* GLSL declares emissive_factor as vec3, which std140 aligns to 16 bytes
+     * (offset 32). The C struct must match, so 8 bytes of padding sit here
+     * (offsets 24-31). Without this the shader read every field from
+     * emissive_factor onward at the wrong offset. */
+    float _pad_emissive_align[2];
+    float emissive_factor[3]; /* vec3 @ 32 */
+    float alpha_cutoff;       /* float @ 44 */
+    float base_color_alpha;   /* float @ 48 */
+    float alpha_mode;         /* float @ 52 */
+    float double_sided;       /* float @ 56 */
+    float emissive_strength;  /* float @ 60 — KHR_materials_emissive_strength */
+    float unlit;              /* float @ 64 — KHR_materials_unlit (0 or 1)    */
+    /* uv_transform_a is vec4[5] in GLSL, aligned to 16 → offset 80. Pad to
+     * reach 80 from 68 (unlit ends at 68). */
+    float _pad_uv_align[3];
+    float uv_transform_a[5][4]; /* vec4[5] @ 80  */
+    float uv_transform_b[5][4]; /* vec4[5] @ 160 */
 } pb_material_ubo;
 
 /* GPU-side light list. Directional occupies slot 0 so the shadow pass can read
@@ -56,6 +66,7 @@ typedef struct pb_light_list_ubo {
 typedef struct pb_gltf_material {
     pb_gltf_alpha_mode alpha_mode;
     bool double_sided;
+    bool unlit;
     pb_rhi_texture albedo;
     pb_rhi_texture metallic_roughness;
     pb_rhi_texture normal;

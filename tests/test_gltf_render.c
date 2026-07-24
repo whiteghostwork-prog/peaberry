@@ -20,6 +20,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef PEABERRY_ASSET_DIR
@@ -829,6 +830,134 @@ PB_TEST(test_gltf_forward_pass_pixel)
     PB_TEST_PASS();
 }
 
+/* Phase 16.1: KHR_materials_unlit must skip all PBR lighting — the rendered
+ * color is the base color only, regardless of light direction. We render the
+ * unlit cube twice with opposite light directions and assert the center pixel
+ * is identical. (A lit cube would change brightness when the light flips.) */
+PB_TEST(test_gltf_unlit_material)
+{
+    char path[512];
+    char vert_spv[512];
+    char frag_spv[512];
+    PB_ASSERT(snprintf(path, sizeof(path), "%s/models/test_unlit.gltf", PEABERRY_ASSET_DIR) < (int)sizeof(path));
+    PB_ASSERT(snprintf(vert_spv, sizeof(vert_spv), "%s/pbr_forward.vert.spv", PEABERRY_SHADER_DIR) < (int)sizeof(vert_spv));
+    PB_ASSERT(snprintf(frag_spv, sizeof(frag_spv), "%s/pbr_forward.frag.spv", PEABERRY_SHADER_DIR) < (int)sizeof(frag_spv));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry unlit material test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    gltf_render_fixture fx = {0};
+    fx.context = ctx;
+    fx.extent = (VkExtent2D){ 256, 256 };
+
+    if (!create_depth_image(&fx) ||
+        !pb_rhi_texture_create_2d(
+            ctx,
+            fx.extent.width,
+            fx.extent.height,
+            1,
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            &fx.hdr_color) ||
+        !pb_rhi_texture_create_2d(
+            ctx,
+            fx.extent.width,
+            fx.extent.height,
+            1,
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            &fx.ldr_color) ||
+        !create_render_passes(&fx) ||
+        !create_framebuffers(&fx)) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("failed to create headless render target");
+    }
+
+    fx.scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    if (!fx.scene) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("test_unlit.gltf missing or load failed");
+    }
+
+    fx.pass = pb_pbr_forward_pass_create(
+        &(pb_pbr_forward_pass_desc){
+            .context = ctx,
+            .render_pass = fx.hdr_render_pass,
+            .vert_spv_path = vert_spv,
+            .frag_spv_path = frag_spv,
+            .ibl_shader_dir = PEABERRY_SHADER_DIR,
+            .exposure = 1.0f,
+        });
+    PB_ASSERT(fx.pass != NULL);
+    fx.post = create_default_post_pass(&fx, 1.0f);
+    PB_ASSERT(fx.post != NULL);
+    pb_pbr_forward_pass_set_scene(fx.pass, fx.scene);
+    PB_ASSERT(pb_pbr_forward_pass_scene_is_bound(fx.pass));
+
+    gltf_render_record_ctx record_ctx = { .fixture = &fx, .time_seconds = 0.0f };
+
+    /* Render 1: light from the upper-left. */
+    pb_light light_a = {0};
+    light_a.type = PB_LIGHT_TYPE_DIRECTIONAL;
+    light_a.direction[0] = -0.5f; light_a.direction[1] = 0.8f; light_a.direction[2] = 0.4f;
+    light_a.color[0] = 4.0f; light_a.color[1] = 4.0f; light_a.color[2] = 4.0f;
+    light_a.shadow_map_index = UINT32_MAX;
+    pb_pbr_forward_pass_set_lights(fx.pass, &light_a, 1);
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
+    uint8_t pixel_a[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, pixel_a));
+
+    /* Render 2: light from the lower-right (opposite). */
+    pb_light light_b = {0};
+    light_b.type = PB_LIGHT_TYPE_DIRECTIONAL;
+    light_b.direction[0] = 0.5f; light_b.direction[1] = -0.8f; light_b.direction[2] = -0.4f;
+    light_b.color[0] = 4.0f; light_b.color[1] = 4.0f; light_b.color[2] = 4.0f;
+    light_b.shadow_map_index = UINT32_MAX;
+    pb_pbr_forward_pass_set_lights(fx.pass, &light_b, 1);
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
+    uint8_t pixel_b[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, pixel_b));
+
+    /* Unlit: both renders must be identical (lighting is ignored). */
+    const int delta =
+        abs((int)pixel_a[0] - (int)pixel_b[0]) +
+        abs((int)pixel_a[1] - (int)pixel_b[1]) +
+        abs((int)pixel_a[2] - (int)pixel_b[2]);
+    if (delta > 0) {
+        fprintf(
+            stderr,
+            "unlit: center pixel changed with light direction (should be identical): "
+            "a=(%u,%u,%u,%u) b=(%u,%u,%u,%u)\n",
+            pixel_a[0], pixel_a[1], pixel_a[2], pixel_a[3],
+            pixel_b[0], pixel_b[1], pixel_b[2], pixel_b[3]);
+    }
+    PB_ASSERT(delta == 0);
+
+    /* The unlit cube must actually render (not the clear color). */
+    PB_ASSERT(pixel_a[0] > 8 || pixel_a[1] > 8 || pixel_a[2] > 8);
+
+    destroy_fixture(&fx);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
 /* Phase 13.1: the light loop must run end-to-end and point lights must
  * contribute to shading. Render test_cube.gltf with the default light list
  * (one directional) to capture a baseline center pixel, then add a bright
@@ -1554,6 +1683,7 @@ void pb_run_gltf_render_tests(void)
     printf("gltf render tests\n");
     PB_RUN_TEST(test_sphere_forward_pass_pixel);
     PB_RUN_TEST(test_gltf_forward_pass_pixel);
+    PB_RUN_TEST(test_gltf_unlit_material);
     PB_RUN_TEST(test_gltf_multi_light_pixel);
     PB_RUN_TEST(test_gltf_point_shadow_pixel);
     PB_RUN_TEST(test_gltf_hdr_post_pixel);

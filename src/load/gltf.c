@@ -189,6 +189,17 @@ static bool load_material_textures(
             break;
         }
         dst->material_data.alpha_cutoff = src->alpha_cutoff;
+
+        /* KHR_materials_unlit: skip all PBR lighting, output base color flat. */
+        dst->unlit = src->unlit ? true : false;
+        dst->material_data.unlit = dst->unlit ? 1.0f : 0.0f;
+
+        /* KHR_materials_emissive_strength: HDR multiplier on emissive output.
+         * cgltf defaults the value to 1.0 when the extension is present but
+         * the scalar is omitted. */
+        if (src->has_emissive_strength) {
+            dst->material_data.emissive_strength = src->emissive_strength.emissive_strength;
+        }
     }
 
     if (src && src->has_pbr_metallic_roughness) {
@@ -532,7 +543,10 @@ static bool create_materials(pb_context *context, cgltf_data *data, const char *
         mat->material_data.alpha_mode = (float)PB_GLTF_ALPHA_OPAQUE;
         mat->alpha_mode = PB_GLTF_ALPHA_OPAQUE;
         mat->double_sided = false;
+        mat->unlit = false;
         mat->material_data.double_sided = 0.0f;
+        mat->material_data.unlit = 0.0f;
+        mat->material_data.emissive_strength = 1.0f;
 
         if (!load_material_textures(context, src, gltf_dir, mat)) {
             return false;
