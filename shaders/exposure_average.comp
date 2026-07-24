@@ -1,0 +1,98 @@
+#version 450
+
+/* Phase 15.2 auto-exposure — pass 2 of 2: reduce the 256-bin histogram into
+ * an adapted exposure value, with temporal eye-adaptation toward the target.
+ *
+ * Single dispatch of one workgroup, local_size_x = 256 — exactly one thread
+ * per histogram bin. Each thread loads its bin's count into shared memory
+ * alongside the bin's luminance-weighted log-luminance, then a tree reduction
+ * (no float atomics — keeps the shader portable to Lavapipe, which does not
+ * advertise GL_EXT_shader_atomic_float) collapses the 256 entries into the
+ * weighted pixel count and weighted log-luminance sum. Thread 0 derives the
+ * target exposure from the weighted log-average luminance, lerps the previous
+ * frame's exposure toward it using `1 - exp2(-dt*speed)` (eye adaptation),
+ * clamps to [min, max], and writes the result into the exposure UBO. The UBO
+ * is persistently mapped on the host so the CPU can read the current exposure
+ * for debugging/tests, and the post pass binds it as a descriptor for the
+ * tonemap shader.
+ *
+ * Luminance weighting: each bin's contribution is scaled by the bin's linear
+ * luminance (weight = exp2(log_lum)). This turns the average into a
+ * luminance-weighted (geometric-leaning) mean that emphasizes lit regions of
+ * the scene over a large dark background. Without it, a near-black clear
+ * color filling most of the frame drags the unweighted average luminance to
+ * ~zero and pins the exposure to its max clamp, blowing out the lit subject.
+ * With it, a small bright object in a mostly-dark frame still pulls the
+ * average up toward its own tonal range. */
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer Histogram {
+    uint bins[];
+} histogram;
+
+/* Binding 1: read-modify-write SSBO. .exposure holds the previous frame's
+ * adapted value on input; this shader writes the new adapted value. Must be
+ * a storage buffer (not a uniform buffer) because UBOs are read-only in
+ * shaders. The post pass binds the same buffer as an SSBO. */
+layout(set = 0, binding = 1) buffer Exposure {
+    float exposure;
+} out_exposure;
+
+layout(push_constant) uniform ExposureParams {
+    float min_log_lum;
+    float max_log_lum;
+    float log_lum_range;
+    float key;
+
+    float min_exposure;
+    float max_exposure;
+    float speed;
+    float dt;
+} params;
+
+shared float shared_weighted_lum[256];   /* sum of (count * lum * log_lum) */
+shared float shared_weighted_count[256]; /* sum of (count * lum)          */
+
+void main()
+{
+    uint idx = gl_LocalInvocationIndex;
+
+    uint count = histogram.bins[idx];
+    float t = (float(idx) + 0.5) / 256.0;
+    float log_lum = params.min_log_lum + t * params.log_lum_range;
+    float lum = exp2(log_lum);  /* linear luminance weight for this bin */
+
+    float cw = float(count) * lum;
+    shared_weighted_lum[idx] = log_lum * cw;
+    shared_weighted_count[idx] = cw;
+    barrier();
+
+    /* Tree reduction — strided add until one entry remains in slot 0. */
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (idx < stride) {
+            shared_weighted_lum[idx] += shared_weighted_lum[idx + stride];
+            shared_weighted_count[idx] += shared_weighted_count[idx + stride];
+        }
+        barrier();
+    }
+
+    if (idx == 0u) {
+        float total_weight = shared_weighted_count[0];
+        float target = out_exposure.exposure;  /* fallback if no lit pixels */
+        if (total_weight > 0.0) {
+            float avg_log_lum = shared_weighted_lum[0] / total_weight;
+            float avg_lum = exp2(avg_log_lum);
+            target = params.key / max(avg_lum, 1e-6);
+        }
+        target = clamp(target, params.min_exposure, params.max_exposure);
+
+        /* Temporal adaptation: exponential approach toward the target. */
+        float prev = out_exposure.exposure;
+        float alpha = 1.0 - exp2(-params.dt * params.speed);
+        float adapted = prev + (target - prev) * alpha;
+        adapted = clamp(adapted, params.min_exposure, params.max_exposure);
+
+        out_exposure.exposure = adapted;
+    }
+}

@@ -4,13 +4,20 @@
  */
 
 #include "core/log.h"
+#include "exposure_pass.h"
 #include "pb_context_internal.h"
 #include "peaberry/peaberry_gltf.h"
 #include "peaberry/peaberry_vk.h"
+#include "rhi/buffer.h"
 #include "rhi/shader.h"
 
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
+
+/* std140 vec4 minimum for a uniform block. tonemap.frag only reads the .x
+ * (exposure float); the rest is padding. */
+#define PB_POST_EXPOSURE_UBO_BYTES 16u
 
 typedef struct pb_pbr_post_pass {
     pb_context *context;
@@ -21,7 +28,13 @@ typedef struct pb_pbr_post_pass {
     VkDescriptorSet descriptor_set;
     VkShaderModule vert_module;
     VkShaderModule frag_module;
-    float exposure;
+
+    /* Exposure UBO source. If exposure_pass is set, the post pass binds the
+     * pass's adapted UBO. Otherwise it owns a small static UBO seeded with the
+     * fixed `exposure` value from the desc (Phase 15.1 backward-compat). */
+    pb_pbr_exposure_pass *exposure_pass;
+    pb_rhi_buffer static_exposure_ubo;
+
     /* Cached (view, sampler) currently bound to descriptor_set. The HDR scene
      * view is usually the same every frame, so we skip vkUpdateDescriptorSets
      * when unchanged — this also avoids the "descriptor set in use" race that
@@ -32,19 +45,45 @@ typedef struct pb_pbr_post_pass {
     bool descriptor_written;
 } pb_pbr_post_pass;
 
+static bool create_static_exposure_ubo(pb_context *context, float exposure, pb_rhi_buffer *out)
+{
+    /* SSBO, not a UBO: the tonemap shader declares exposure as a readonly
+     * storage buffer so the same binding works whether the buffer is the
+     * exposure pass's GPU-written SSBO or this static fallback. */
+    pb_rhi_buffer_desc desc = {
+        .size = PB_POST_EXPOSURE_UBO_BYTES,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
+    };
+    if (!pb_rhi_buffer_create(context, &desc, out)) {
+        return false;
+    }
+    float padded[4] = { exposure, 0.0f, 0.0f, 0.0f };
+    memcpy(out->mapped, padded, sizeof(padded));
+    return true;
+}
+
 static bool create_descriptor_set_layout(pb_context *context, VkDescriptorSetLayout *out_layout)
 {
-    VkDescriptorSetLayoutBinding binding = {
-        .binding = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = 1,
-        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    VkDescriptorSetLayoutBinding bindings[] = {
+        {
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 1,
-        .pBindings = &binding,
+        .bindingCount = sizeof(bindings) / sizeof(bindings[0]),
+        .pBindings = bindings,
     };
 
     return vkCreateDescriptorSetLayout(pb_context_device(context), &layout_info, NULL, out_layout) ==
@@ -62,18 +101,10 @@ static bool create_pipeline(
 {
     VkDevice device = pb_context_device(context);
 
-    VkPushConstantRange push = {
-        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-        .offset = 0,
-        .size = sizeof(float),
-    };
-
     VkPipelineLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = 1,
         .pSetLayouts = &set_layout,
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &push,
     };
 
     if (vkCreatePipelineLayout(device, &layout_info, NULL, out_layout) != VK_SUCCESS) {
@@ -134,6 +165,19 @@ static bool create_pipeline(
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
 
+    /* The tonemap pass doesn't touch depth, but the caller's LDR render pass
+     * may still declare a depth attachment (the test fixture does). Provide a
+     * no-op depth/stencil state so the pipeline is compatible with such a
+     * render pass — depth test disabled, no writes. */
+    VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_FALSE,
+        .depthWriteEnable = VK_FALSE,
+        .depthCompareOp = VK_COMPARE_OP_ALWAYS,
+        .depthBoundsTestEnable = VK_FALSE,
+        .stencilTestEnable = VK_FALSE,
+    };
+
     VkPipelineColorBlendAttachmentState blend_attachment = {
         .colorWriteMask =
             VK_COLOR_COMPONENT_R_BIT |
@@ -157,6 +201,7 @@ static bool create_pipeline(
         .pViewportState = &viewport_state,
         .pRasterizationState = &rasterization,
         .pMultisampleState = &multisample,
+        .pDepthStencilState = &depth_stencil,
         .pColorBlendState = &color_blend,
         .pDynamicState = &dynamic_state,
         .layout = *out_layout,
@@ -170,16 +215,16 @@ static bool create_pipeline(
 
 static bool allocate_descriptor_set(pb_context *context, VkDescriptorSetLayout layout, VkDescriptorPool *out_pool, VkDescriptorSet *out_set)
 {
-    VkDescriptorPoolSize pool_size = {
-        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = 1,
+    VkDescriptorPoolSize pool_sizes[] = {
+        { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1 },
+        { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1 },
     };
 
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .maxSets = 1,
-        .poolSizeCount = 1,
-        .pPoolSizes = &pool_size,
+        .poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]),
+        .pPoolSizes = pool_sizes,
     };
 
     if (vkCreateDescriptorPool(pb_context_device(context), &pool_info, NULL, out_pool) != VK_SUCCESS) {
@@ -208,7 +253,16 @@ pb_pbr_post_pass *pb_pbr_post_pass_create(const pb_pbr_post_pass_desc *desc)
         return NULL;
     }
     pass->context = desc->context;
-    pass->exposure = desc->exposure;
+    pass->exposure_pass = desc->exposure_pass;
+
+    /* If no auto-exposure pass is wired in, seed a static UBO with the
+     * requested fixed exposure. */
+    if (!pass->exposure_pass) {
+        if (!create_static_exposure_ubo(desc->context, desc->exposure, &pass->static_exposure_ubo)) {
+            pb_pbr_post_pass_destroy(pass);
+            return NULL;
+        }
+    }
 
     VkDevice device = pb_context_device(desc->context);
 
@@ -227,6 +281,28 @@ pb_pbr_post_pass *pb_pbr_post_pass_create(const pb_pbr_post_pass_desc *desc)
         pb_pbr_post_pass_destroy(pass);
         return NULL;
     }
+
+    /* Write binding 1 (exposure UBO) once at create time — the buffer handle
+     * is stable for the pass's lifetime. Binding 0 (HDR view) is written in
+     * record() with caching. */
+    VkBuffer exposure_buffer = pass->exposure_pass
+        ? pb_pbr_exposure_pass_ubo_handle(pass->exposure_pass)
+        : pass->static_exposure_ubo.handle;
+
+    VkDescriptorBufferInfo exposure_info = {
+        .buffer = exposure_buffer,
+        .offset = 0,
+        .range = PB_POST_EXPOSURE_UBO_BYTES,
+    };
+    VkWriteDescriptorSet exposure_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = pass->descriptor_set,
+        .dstBinding = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &exposure_info,
+    };
+    vkUpdateDescriptorSets(device, 1, &exposure_write, 0, NULL);
 
     return pass;
 }
@@ -256,6 +332,9 @@ void pb_pbr_post_pass_destroy(pb_pbr_post_pass *pass)
         }
         if (pass->frag_module) {
             vkDestroyShaderModule(device, pass->frag_module, NULL);
+        }
+        if (pass->static_exposure_ubo.handle != VK_NULL_HANDLE) {
+            pb_rhi_buffer_destroy(pass->context, &pass->static_exposure_ubo);
         }
     }
     free(pass);
@@ -327,8 +406,6 @@ void pb_pbr_post_pass_record(
         .extent = extent,
     };
     vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-    vkCmdPushConstants(cmd, pass->pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &pass->exposure);
 
     /* Fullscreen triangle generated by the vertex shader from gl_VertexIndex. */
     vkCmdDraw(cmd, 3, 1, 0, 0);

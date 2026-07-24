@@ -425,7 +425,7 @@ static void record_face_draw(
     vkCmdPushConstants(
         cmd,
         pass->pipeline_layout,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        VK_SHADER_STAGE_VERTEX_BIT,
         0,
         sizeof(push),
         &push);
@@ -462,20 +462,18 @@ void pb_point_shadow_pass_record(
     VkClearValue clear = { .depthStencil = { 1.0f, 0 } };
 
     for (uint32_t face = 0; face < 6; ++face) {
-        /* Update the per-face UBO (binding 15) with this face's view-proj. */
+        /* Update the per-face UBO (binding 15) with this face's view-proj. The
+         * caller's dynamic_offsets already include this UBO's slot offset
+         * (pass_descriptor_dynamic_offsets in pbr_forward_pass.c reads
+         * pb_point_shadow_pass_frame_slot_offset for binding 15), so we pass
+         * them through unchanged — appending a 4th offset here would
+         * double-count it and trip VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359
+         * (the descriptor set has 3 dynamic UBOs: bindings 0, 13, 15). */
         pb_point_shadow_frame_ubo frame_ubo;
         build_face_view_proj(light_pos, range, face, frame_ubo.face_view_proj);
         memcpy(frame_ubo.light_pos, light_pos, sizeof(frame_ubo.light_pos));
         frame_ubo.light_range = range;
         pb_rhi_ring_buffer_write_slot(&pass->frame_ubo, pass->frame_slot, &frame_ubo, sizeof(frame_ubo));
-
-        /* The base dynamic offsets from the caller cover binding 0 (frame UBO)
-         * and binding 13 (light list). Append the point-shadow UBO's offset
-         * (binding 15) as the last entry. */
-        uint32_t offsets[4];
-        const uint32_t copy_n = dynamic_offset_count <= 3 ? dynamic_offset_count : 3;
-        memcpy(offsets, dynamic_offsets, copy_n * sizeof(uint32_t));
-        offsets[copy_n] = (uint32_t)pb_rhi_ring_buffer_slot_offset(&pass->frame_ubo, pass->frame_slot);
 
         VkRenderPassBeginInfo rp_begin = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -516,8 +514,8 @@ void pb_point_shadow_pass_record(
                 draw,
                 pipeline,
                 material_descriptor_sets[draw->material_index],
-                offsets,
-                copy_n + 1,
+                dynamic_offsets,
+                dynamic_offset_count,
                 1);
         }
 
@@ -535,8 +533,8 @@ void pb_point_shadow_pass_record(
                     draw,
                     pipeline,
                     material_descriptor_sets[draw->material_index],
-                    offsets,
-                    copy_n + 1,
+                    dynamic_offsets,
+                    dynamic_offset_count,
                     instanced_count);
             }
         }

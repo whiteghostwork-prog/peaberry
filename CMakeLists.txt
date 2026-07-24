@@ -78,6 +78,8 @@ peaberry_compile_glsl(PEABERRY_SHADER_SPIRV
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/point_shadow_depth.vert
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/point_shadow_depth.frag
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/tonemap.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/exposure_histogram.comp
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/exposure_average.comp
 )
 
 add_subdirectory(src)
@@ -101,7 +103,7 @@ include(CMakePackageConfigHelpers)
 install(
     DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/shaders/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/peaberry/shaders
-    FILES_MATCHING PATTERN "*.vert" PATTERN "*.frag"
+    FILES_MATCHING PATTERN "*.vert" PATTERN "*.frag" PATTERN "*.comp"
 )
 
 install(

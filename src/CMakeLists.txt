@@ -21,6 +21,7 @@ add_library(peaberry STATIC
     rhi/triangle.c
     pbr/ibl.c
     pbr/draw_sort.c
+    pbr/exposure_pass.c
     pbr/frustum_cull.c
     pbr/pbr_forward_pass.c
     pbr/point_shadow_pass.c

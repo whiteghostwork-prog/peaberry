@@ -1,0 +1,63 @@
+#version 450
+
+/* Phase 15.2 auto-exposure — pass 1 of 2: build a 256-bin log-luminance
+ * histogram of the HDR scene color. Each workgroup (16x16 = 256 threads)
+ * first accumulates into shared memory, then flushes its 256 local bins into
+ * the global SSBO with one atomicAdd per thread. The global SSBO must be
+ * cleared to zero (vkCmdFillBuffer) before this dispatch. */
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) buffer Histogram {
+    uint bins[];
+} histogram;
+
+layout(set = 0, binding = 1) uniform sampler2D u_hdr;
+
+layout(push_constant) uniform ExposureParams {
+    float min_log_lum;   /* lower bound of histogram range, e.g. -10  */
+    float max_log_lum;   /* upper bound of histogram range, e.g. +2   */
+    float log_lum_range; /* max - min, precomputed to avoid div in loop */
+    float key;           /* middle-gray target, ~0.8                  */
+
+    float min_exposure;
+    float max_exposure;
+    float speed;         /* adaptation rate (~2.0)                    */
+    float dt;            /* seconds since previous frame              */
+} params;
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+shared uint local_bins[256];
+
+void main()
+{
+    /* Clear the local histogram bin owned by this thread. */
+    if (gl_LocalInvocationIndex < 256u) {
+        local_bins[gl_LocalInvocationIndex] = 0u;
+    }
+    barrier();
+
+    /* Sample the HDR target if this thread maps to a real pixel. */
+    uvec2 dim = textureSize(u_hdr, 0);
+    uint pixel_index = gl_GlobalInvocationID.y * dim.x + gl_GlobalInvocationID.x;
+    if (gl_GlobalInvocationID.x < dim.x && gl_GlobalInvocationID.y < dim.y) {
+        vec3 color = texelFetch(u_hdr, ivec2(gl_GlobalInvocationID.xy), 0).rgb;
+        float luma = dot(color, LUMA);
+        if (luma > 1e-6) {
+            float log_lum = log2(luma);
+            float t = (log_lum - params.min_log_lum) / params.log_lum_range;
+            int b = int(clamp(t * 256.0, 0.0, 255.0));
+            atomicAdd(local_bins[b], 1u);
+        }
+    }
+    barrier();
+
+    /* Flush one local bin to the global SSBO per thread. */
+    if (gl_LocalInvocationIndex < 256u) {
+        uint count = local_bins[gl_LocalInvocationIndex];
+        if (count > 0u) {
+            atomicAdd(histogram.bins[gl_LocalInvocationIndex], count);
+        }
+    }
+}

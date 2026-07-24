@@ -169,7 +169,10 @@ void pb_rhi_texture_transition_layout(
         dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         dst_access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     } else if (new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-        dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        /* Phase 15.2: compute shaders (auto-exposure histogram) also sample the
+         * shader-read-only image, so the dst stage must cover both fragment and
+         * compute. Adding COMPUTE_SHADER is harmless for fragment-only reads. */
+        dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
         dst_access = VK_ACCESS_SHADER_READ_BIT;
     }
 

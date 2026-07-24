@@ -40,7 +40,7 @@ typedef struct pb_frame_ubo {
     float shadow_bias_slope;
     float shadow_texel_size;
     float shadow_debug;
-    float _pad;
+    float ibl_intensity;   /* scales IBL ambient; <1 darkens shadowed faces for stronger shadow contrast */
 } pb_frame_ubo;
 
 struct pb_pbr_forward_pass {
@@ -69,6 +69,7 @@ struct pb_pbr_forward_pass {
     bool shadows_enabled;
     float shadow_bias_slope;
     bool shadow_debug;
+    float ibl_intensity;
     bool frustum_culling_enabled;
     uint32_t last_visible_draw_count;
     pb_rhi_buffer instance_buffer;
@@ -799,6 +800,7 @@ static void fill_shadow_frame_fields(
     frame->shadow_bias_slope = pass->shadow_bias_slope;
     frame->shadow_texel_size = 1.0f / (float)PB_SHADOW_MAP_SIZE;
     frame->shadow_debug = pass->shadow_debug ? 1.0f : 0.0f;
+    frame->ibl_intensity = pass->ibl_intensity;
 
     if (!pass->shadows_enabled || !pass->shadow || !scene || scene->material_count == 0) {
         return;
@@ -1074,10 +1076,11 @@ pb_pbr_forward_pass *pb_pbr_forward_pass_create(const pb_pbr_forward_pass_desc *
 
     pass->context = desc->context;
     pass->exposure = desc->exposure > 0.0f ? desc->exposure : 1.0f;
-    pass->shadow_bias = 0.002f;
-    pass->shadow_bias_slope = 0.003f;
+    pass->shadow_bias = 0.001f;
+    pass->shadow_bias_slope = 0.001f;
     pass->shadows_enabled = true;
     pass->shadow_debug = false;
+    pass->ibl_intensity = 1.0f;
     pass->frustum_culling_enabled = true;
     pass->last_visible_draw_count = 0;
     pass->instanced_draw_index = PB_PBR_NO_INSTANCED_DRAW;
@@ -1293,6 +1296,14 @@ void pb_pbr_forward_pass_set_frustum_culling_enabled(pb_pbr_forward_pass *pass, 
     }
 
     pass->frustum_culling_enabled = enabled;
+}
+
+void pb_pbr_forward_pass_set_ibl_intensity(pb_pbr_forward_pass *pass, float intensity)
+{
+    if (!pass) {
+        return;
+    }
+    pass->ibl_intensity = intensity;
 }
 
 uint32_t pb_pbr_forward_pass_last_visible_draw_count(const pb_pbr_forward_pass *pass)

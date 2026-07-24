@@ -51,7 +51,7 @@ The research question is not “can an agent write any code,” but **can agents
 | Ray tracing (Phase 12) | Removed — single-bounce `rayQuery` reflections were a dead-end bet; superseded by the Phase 18 path-tracing track |
 | Lighting — single hardcoded directional | **Gap** — no point/spot, no multi-light, no public setter, no `KHR_lights_punctual` |
 | Shadows — single 1024² PCF map | **Gap** — no cascades (CSM), no cube/omni maps (blocks point lights), no soft-shadow option |
-| Post-processing | **Gap** — ACES tonemap inlined in forward frag; no HDR offscreen target, no bloom/SSAO/TAA/auto-exposure |
+| Post-processing | HDR offscreen + ACES tonemap post pass (15.1, done); auto-exposure via luminance histogram + temporal adaptation (15.2, done); **gap** — no bloom/SSAO/TAA |
 | glTF material extensions | **Gap** — none loaded; `KHR_materials_unlit/_clearcoat/_sheen/_transmission/_volume/_ior/_specular/_emissive_strength/_iridescence/_anisotropy` all unsupported |
 | sRGB output | **Gap** — approximate `pow(1/2.2)` in-shader instead of sRGB render-target / proper OETF |
 | glTF completeness | **Gap** — no morph targets, no KTX2/BasisU, embedded data-URI images skipped |
@@ -109,7 +109,7 @@ New tracks addressing the gaps that currently keep peaberry from reading as a co
 | Sub | Goal | Owner |
 |-----|------|-------|
 | 15.1 | HDR offscreen target (`R16G16B16A16_SFLOAT`) + fullscreen-triangle post pass; move tonemap out of the forward frag shader; replace `pow(1/2.2)` with sRGB render-target / proper OETF | peaberry |
-| 15.2 | Auto-exposure (histogram / average luminance) | peaberry |
+| 15.2 | Auto-exposure (log-luminance histogram + temporal eye-adaptation; peaberry's first compute shader) — *done* | peaberry |
 | 15.3 | Bloom | peaberry |
 | 15.4 | SSAO (GTAO-style) | peaberry |
 | 15.5 | TAA (requires per-pixel motion vectors) | peaberry |

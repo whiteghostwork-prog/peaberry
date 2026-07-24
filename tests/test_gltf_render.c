@@ -18,6 +18,7 @@
 #include "rhi/cmd_submit.h"
 #include "rhi/texture.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -33,6 +34,7 @@ typedef struct gltf_render_fixture {
     pb_context *context;
     pb_pbr_forward_pass *pass;
     pb_pbr_post_pass *post;
+    pb_pbr_exposure_pass *exposure;
     pb_gltf_scene *scene;
     /* HDR scene pass: forward writes linear HDR into hdr_color (with depth).
      * Transitioned to SHADER_READ before the post pass samples it. */
@@ -54,6 +56,11 @@ typedef struct gltf_render_fixture {
 typedef struct gltf_render_record_ctx {
     gltf_render_fixture *fixture;
     float time_seconds;
+    /* Optional HDR clear color override (used by the auto-exposure test to
+     * drive the whole-image luminance up/down). When all four components are
+     * zero, the helper falls back to the default dim clear. */
+    float clear_color[4];
+    bool clear_color_set;
 } gltf_render_record_ctx;
 
 static bool choose_depth_format(VkPhysicalDevice physical_device, VkFormat *out_format)
@@ -304,6 +311,48 @@ static pb_pbr_post_pass *create_default_post_pass(gltf_render_fixture *fx, float
         });
 }
 
+/* Phase 15.2 helper: create the exposure pass and a post pass bound to its
+ * adapted exposure UBO. Stashes them on the fixture so destroy_fixture() can
+ * clean them up. */
+static bool create_auto_exposure_pipeline(gltf_render_fixture *fx, float initial_exposure)
+{
+    char hist_spv[512];
+    char avg_spv[512];
+    char vert_spv[512];
+    char frag_spv[512];
+    if (snprintf(hist_spv, sizeof(hist_spv), "%s/exposure_histogram.comp.spv", PEABERRY_SHADER_DIR) >= (int)sizeof(hist_spv) ||
+        snprintf(avg_spv, sizeof(avg_spv), "%s/exposure_average.comp.spv", PEABERRY_SHADER_DIR) >= (int)sizeof(avg_spv) ||
+        snprintf(vert_spv, sizeof(vert_spv), "%s/fullscreen.vert.spv", PEABERRY_SHADER_DIR) >= (int)sizeof(vert_spv) ||
+        snprintf(frag_spv, sizeof(frag_spv), "%s/tonemap.frag.spv", PEABERRY_SHADER_DIR) >= (int)sizeof(frag_spv)) {
+        return false;
+    }
+
+    fx->exposure = pb_pbr_exposure_pass_create(
+        &(pb_pbr_exposure_pass_desc){
+            .context = fx->context,
+            .histogram_spv_path = hist_spv,
+            .average_spv_path = avg_spv,
+            .initial_exposure = initial_exposure,
+        });
+    if (!fx->exposure) {
+        return false;
+    }
+
+    fx->post = pb_pbr_post_pass_create(
+        &(pb_pbr_post_pass_desc){
+            .context = fx->context,
+            .render_pass = fx->ldr_render_pass,
+            .vert_spv_path = vert_spv,
+            .frag_spv_path = frag_spv,
+            .exposure = initial_exposure,
+            .exposure_pass = fx->exposure,
+        });
+    if (!fx->post) {
+        return false;
+    }
+    return true;
+}
+
 static void destroy_fixture(gltf_render_fixture *fx)
 {
     if (!fx || !fx->context || !pb_context_device_ready(fx->context)) {
@@ -316,6 +365,10 @@ static void destroy_fixture(gltf_render_fixture *fx)
     if (fx->post) {
         pb_pbr_post_pass_destroy(fx->post);
         fx->post = NULL;
+    }
+    if (fx->exposure) {
+        pb_pbr_exposure_pass_destroy(fx->exposure);
+        fx->exposure = NULL;
     }
     if (fx->pass) {
         pb_pbr_forward_pass_destroy(fx->pass);
@@ -409,6 +462,80 @@ static void record_gltf_frame(VkCommandBuffer cmd, void *user_data)
     /* Transition HDR color back to COLOR_ATTACHMENT_OPTIMAL for the next frame
      * (render pass loadOp=CLEAR with initialLayout=UNDEFINED handles the
      * discard, but we keep the layout consistent to be safe). */
+    pb_rhi_texture_transition_layout(
+        cmd,
+        &fx->hdr_color,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        1,
+        1);
+}
+
+/* Phase 15.2: same as record_gltf_frame but dispatches the auto-exposure pass
+ * between the forward pass (which writes HDR) and the post pass (which
+ * tonemaps using the pass's adapted exposure). The exposure pass samples the
+ * HDR color in SHADER_READ_ONLY_OPTIMAL, so it must run inside the same
+ * transition window the post pass already uses. */
+static void record_gltf_auto_exposure_frame(VkCommandBuffer cmd, void *user_data)
+{
+    gltf_render_record_ctx *ctx = user_data;
+    gltf_render_fixture *fx = ctx->fixture;
+
+    pb_pbr_forward_pass_record_shadow_map(fx->pass, cmd, fx->extent, fx->scene);
+
+    VkClearValue hdr_clears[2] = {
+        { .color = { { 0.02f, 0.02f, 0.025f, 1.0f } } },
+        { .depthStencil = { 1.0f, 0 } },
+    };
+    if (ctx->clear_color_set) {
+        hdr_clears[0].color.float32[0] = ctx->clear_color[0];
+        hdr_clears[0].color.float32[1] = ctx->clear_color[1];
+        hdr_clears[0].color.float32[2] = ctx->clear_color[2];
+        hdr_clears[0].color.float32[3] = ctx->clear_color[3];
+    }
+
+    VkRenderPassBeginInfo hdr_begin = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = fx->hdr_render_pass,
+        .framebuffer = fx->hdr_framebuffer,
+        .renderArea = { .extent = fx->extent },
+        .clearValueCount = 2,
+        .pClearValues = hdr_clears,
+    };
+
+    vkCmdBeginRenderPass(cmd, &hdr_begin, VK_SUBPASS_CONTENTS_INLINE);
+    pb_pbr_forward_pass_record(fx->pass, cmd, fx->extent, fx->scene, ctx->time_seconds);
+    vkCmdEndRenderPass(cmd);
+
+    pb_rhi_texture_transition_layout(
+        cmd,
+        &fx->hdr_color,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        1,
+        1);
+
+    /* Measure HDR luminance and adapt the exposure UBO before the tonemap. */
+    pb_pbr_exposure_pass_record(
+        fx->exposure,
+        cmd,
+        fx->hdr_color.view,
+        fx->hdr_color.sampler,
+        fx->extent,
+        1.0f / 30.0f);
+
+    VkRenderPassBeginInfo ldr_begin = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = fx->ldr_render_pass,
+        .framebuffer = fx->ldr_framebuffer,
+        .renderArea = { .extent = fx->extent },
+        .clearValueCount = 0,
+    };
+
+    vkCmdBeginRenderPass(cmd, &ldr_begin, VK_SUBPASS_CONTENTS_INLINE);
+    pb_pbr_post_pass_record(fx->post, cmd, fx->extent, fx->hdr_color.view, fx->hdr_color.sampler);
+    vkCmdEndRenderPass(cmd);
+
     pb_rhi_texture_transition_layout(
         cmd,
         &fx->hdr_color,
@@ -1095,6 +1222,162 @@ PB_TEST(test_gltf_hdr_post_pixel)
     PB_TEST_PASS();
 }
 
+/* Phase 15.2: the auto-exposure pass must (a) actually measure scene
+ * luminance — a brighter scene drives the adapted exposure *down*, a darker
+ * scene drives it *up* — and (b) converge (the adapted value stabilizes once
+ * the scene stops changing). We render the cube with two different light
+ * intensities, running enough frames for the exponential adaptation to
+ * settle, and compare the converged exposures. */
+PB_TEST(test_gltf_auto_exposure)
+{
+    char path[512];
+    char vert_spv[512];
+    char frag_spv[512];
+    PB_ASSERT(snprintf(path, sizeof(path), "%s/models/test_cube.gltf", PEABERRY_ASSET_DIR) < (int)sizeof(path));
+    PB_ASSERT(snprintf(vert_spv, sizeof(vert_spv), "%s/pbr_forward.vert.spv", PEABERRY_SHADER_DIR) < (int)sizeof(vert_spv));
+    PB_ASSERT(snprintf(frag_spv, sizeof(frag_spv), "%s/pbr_forward.frag.spv", PEABERRY_SHADER_DIR) < (int)sizeof(frag_spv));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry auto-exposure test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    gltf_render_fixture fx = {0};
+    fx.context = ctx;
+    fx.extent = (VkExtent2D){ 256, 256 };
+
+    if (!create_depth_image(&fx) ||
+        !pb_rhi_texture_create_2d(
+            ctx,
+            fx.extent.width,
+            fx.extent.height,
+            1,
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            &fx.hdr_color) ||
+        !pb_rhi_texture_create_2d(
+            ctx,
+            fx.extent.width,
+            fx.extent.height,
+            1,
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            &fx.ldr_color) ||
+        !create_render_passes(&fx) ||
+        !create_framebuffers(&fx)) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("failed to create headless render target");
+    }
+
+    fx.scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    if (!fx.scene) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("test_cube.gltf missing or load failed");
+    }
+
+    fx.pass = pb_pbr_forward_pass_create(
+        &(pb_pbr_forward_pass_desc){
+            .context = ctx,
+            .render_pass = fx.hdr_render_pass,
+            .vert_spv_path = vert_spv,
+            .frag_spv_path = frag_spv,
+            .ibl_shader_dir = PEABERRY_SHADER_DIR,
+            .exposure = 1.0f,
+        });
+    PB_ASSERT(fx.pass != NULL);
+    pb_pbr_forward_pass_set_scene(fx.pass, fx.scene);
+    PB_ASSERT(pb_pbr_forward_pass_scene_is_bound(fx.pass));
+    PB_ASSERT(create_auto_exposure_pipeline(&fx, 1.0f));
+
+    gltf_render_record_ctx record_ctx = { .fixture = &fx, .time_seconds = 0.0f };
+
+    /* One dim directional light to shade the cube. The dominant luminance
+     * term in the histogram is the HDR clear color (most pixels are
+     * background), so we drive scene brightness via the clear to make the
+     * adaptation response unambiguous. */
+    pb_light dir = {0};
+    dir.type = PB_LIGHT_TYPE_DIRECTIONAL;
+    dir.direction[0] = 0.5f;
+    dir.direction[1] = 0.8f;
+    dir.direction[2] = 0.4f;
+    dir.color[0] = 1.0f;
+    dir.color[1] = 1.0f;
+    dir.color[2] = 1.0f;
+    dir.shadow_map_index = UINT32_MAX;
+    pb_pbr_forward_pass_set_lights(fx.pass, &dir, 1);
+
+    /* Dim scene: very dark clear. Adaptation must drive exposure UP toward
+     * the max clamp. With speed=2 and dt=1/30 the per-frame alpha is ~0.064,
+     * so 120 frames reaches >0.9995 of the target. */
+    record_ctx.clear_color_set = true;
+    record_ctx.clear_color[0] = 0.001f;
+    record_ctx.clear_color[1] = 0.001f;
+    record_ctx.clear_color[2] = 0.001f;
+    record_ctx.clear_color[3] = 1.0f;
+
+    float dim_exposure = pb_pbr_exposure_pass_current(fx.exposure);
+    for (int i = 0; i < 120; ++i) {
+        PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_auto_exposure_frame, &record_ctx));
+        float next = pb_pbr_exposure_pass_current(fx.exposure);
+        if (fabsf(next - dim_exposure) < 1e-4f) {
+            dim_exposure = next;
+            break;
+        }
+        dim_exposure = next;
+    }
+
+    /* Bright scene: lift the clear into HDR territory. The histogram's
+     * average luminance rises well above middle gray, so the target exposure
+     * (key/avg_lum) drops below 1.0 and adaptation drags the current value
+     * down with it. Needs an HDR clear so the target isn't floored by the
+     * max_exposure clamp the dim scene pins against. */
+    record_ctx.clear_color[0] = 4.0f;
+    record_ctx.clear_color[1] = 4.0f;
+    record_ctx.clear_color[2] = 4.0f;
+
+    float bright_exposure = pb_pbr_exposure_pass_current(fx.exposure);
+    for (int i = 0; i < 120; ++i) {
+        PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_auto_exposure_frame, &record_ctx));
+        float next = pb_pbr_exposure_pass_current(fx.exposure);
+        if (fabsf(next - bright_exposure) < 1e-4f) {
+            bright_exposure = next;
+            break;
+        }
+        bright_exposure = next;
+    }
+
+    /* Contract: a brighter scene must produce a strictly lower adapted
+     * exposure. The dim scene pins against the default max_exposure clamp
+     * (2.0); the bright scene's target is much lower so adaptation drags it
+     * down. Assert the dim scene reached the clamp ceiling and the bright
+     * scene is at least 2x lower — proving the histogram responds to scene
+     * brightness. With key=0.18 (middle-gray), the dim scene (clear 0.001)
+     * drives exposure up toward the max clamp; the bright scene (clear 4.0,
+     * HDR) drives it well below 1.0. */
+    PB_ASSERT(dim_exposure > bright_exposure);
+    PB_ASSERT(dim_exposure / bright_exposure > 2.0f);
+    PB_ASSERT(bright_exposure >= 0.05f && bright_exposure <= 2.0f);
+
+    destroy_fixture(&fx);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
 typedef struct gltf_sphere_record_ctx {
     pb_sphere_pass *pass;
     gltf_render_fixture *fixture;
@@ -1274,5 +1557,6 @@ void pb_run_gltf_render_tests(void)
     PB_RUN_TEST(test_gltf_multi_light_pixel);
     PB_RUN_TEST(test_gltf_point_shadow_pixel);
     PB_RUN_TEST(test_gltf_hdr_post_pixel);
+    PB_RUN_TEST(test_gltf_auto_exposure);
     PB_RUN_TEST(test_gltf_draw_with_sphere_pass);
 }

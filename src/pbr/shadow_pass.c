@@ -279,7 +279,17 @@ static bool create_pipeline_variant(
     VkPipelineRasterizationStateCreateInfo rasterization = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = cull_mode,
+        /* Cull front faces (render back faces) for the opaque shadow pipeline.
+         * Storing the FAR side of closed geometry means the near (lit) faces
+         * are always closer to the light than the stored depth, so they pass
+         * the shadow test cleanly — no self-occlusion acne, and because the
+         * near and far faces are separated by the full geometry depth (not a
+         * fragile bias), PCF neighbors can't bleed shadow across silhouette
+         * edges onto lit faces. The double-sided variant keeps its cull_mode
+         * for non-watertight geometry. */
+        .cullMode = cull_mode == VK_CULL_MODE_BACK_BIT
+            ? VK_CULL_MODE_FRONT_BIT
+            : cull_mode,
         .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
         .lineWidth = 1.0f,
     };

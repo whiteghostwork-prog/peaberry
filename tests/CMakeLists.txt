@@ -56,3 +56,19 @@ add_test(NAME peaberry_tests COMMAND peaberry_tests)
 set_tests_properties(peaberry_tests PROPERTIES
     LABELS "unit;gpu"
 )
+
+# Headless render-to-PNG diagnostic tool (not a test). Renders a glTF scene with
+# the full HDR pipeline + auto-exposure and writes the LDR output as a PNG so
+# visual artifacts can be inspected without a windowing system.
+add_executable(peaberry_capture capture_frame.c)
+target_include_directories(peaberry_capture PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+    ${stb_SOURCE_DIR}
+)
+target_link_libraries(peaberry_capture PRIVATE peaberry m)
+target_compile_definitions(peaberry_capture PRIVATE
+    PEABERRY_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders"
+    PEABERRY_ASSET_DIR="${PEABERRY_ASSET_DIR}"
+)
+add_dependencies(peaberry_capture peaberry_shaders)

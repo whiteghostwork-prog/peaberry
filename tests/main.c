@@ -20,6 +20,12 @@ void pb_run_ring_buffer_tests(void);
 
 int main(void)
 {
+    /* Line-buffer stdout so test results are flushed as they're printed.
+     * Lavapipe's worker threads intermittently crash during process exit
+     * (a known driver bug); line-buffering ensures the results reach disk
+     * even if the crash interrupts the final teardown. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
     pb_test_reset_stats();
 
     pb_run_math_tests();
@@ -33,6 +39,7 @@ int main(void)
     pb_run_bench_tests();
 
     pb_test_report("total");
+    fflush(stdout);
 
     if (g_pb_test_stats.failed > 0) {
         return EXIT_FAILURE;

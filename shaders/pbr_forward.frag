@@ -12,7 +12,7 @@ layout(set = 0, binding = 0) uniform FrameData {
     float shadow_bias_slope;
     float shadow_texel_size;
     float shadow_debug;
-    float _pad;
+    float ibl_intensity;
 } frame;
 
 layout(set = 0, binding = 1) uniform Material {
@@ -297,7 +297,7 @@ void main()
     vec2 brdf = texture(u_brdf_lut, vec2(max(dot(N, V), 0.0), roughness)).rg;
     vec3 specular_ibl = prefiltered * (fresnel_schlick_roughness(max(dot(N, V), 0.0), F0, roughness) * brdf.x + brdf.y);
 
-    vec3 ambient = kD_ambient * diffuse_ibl + specular_ibl;
+    vec3 ambient = (kD_ambient * diffuse_ibl + specular_ibl) * frame.ibl_intensity;
 
     /* occlusion: sample R channel, mix with strength, modulate ambient + direct */
     float occlusion = mix(1.0, texture(u_occlusion, uv_occlusion).r, material.occlusion_strength);

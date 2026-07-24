@@ -179,6 +179,10 @@ void pb_pbr_forward_pass_set_shadow_debug(pb_pbr_forward_pass *pass, bool enable
 
 void pb_pbr_forward_pass_set_frustum_culling_enabled(pb_pbr_forward_pass *pass, bool enabled);
 
+/* Scale factor for image-based lighting (ambient). 1.0 = full IBL; lower
+ * values darken shadowed regions for stronger shadow contrast. */
+void pb_pbr_forward_pass_set_ibl_intensity(pb_pbr_forward_pass *pass, float intensity);
+
 uint32_t pb_pbr_forward_pass_last_visible_draw_count(const pb_pbr_forward_pass *pass);
 
 void pb_pbr_forward_pass_set_frame_slot(pb_pbr_forward_pass *pass, uint32_t slot);
@@ -212,15 +216,22 @@ void pb_pbr_forward_pass_record(
  * color target, transitioning that target to SHADER_READ_ONLY_OPTIMAL, then
  * recording the post pass inside a render pass targeting the LDR output
  * (swapchain or readback target). Present via an sRGB swapchain format so
- * the sRGB encode happens in the output unit, not the shader. */
+ * the sRGB encode happens in the output unit, not the shader.
+ *
+ * Phase 15.2: exposure is read from a UBO (tonemap.frag binding 1). If
+ * `exposure_pass` is set, the pass binds that pass's adapted exposure UBO; if
+ * NULL, the pass creates a small internal UBO and seeds it with the static
+ * `exposure` value (Phase 15.1 backward-compat path — useful for tests). */
 typedef struct pb_pbr_post_pass pb_pbr_post_pass;
+typedef struct pb_pbr_exposure_pass pb_pbr_exposure_pass;
 
 typedef struct pb_pbr_post_pass_desc {
     pb_context *context;
     VkRenderPass render_pass;
     const char *vert_spv_path;   /* resolves to fullscreen.vert.spv */
     const char *frag_spv_path;   /* resolves to tonemap.frag.spv    */
-    float exposure;              /* HDR multiplier applied before ACES */
+    float exposure;              /* static fallback if exposure_pass is NULL */
+    pb_pbr_exposure_pass *exposure_pass;  /* nullable; Phase 15.2 */
 } pb_pbr_post_pass_desc;
 
 pb_pbr_post_pass *pb_pbr_post_pass_create(const pb_pbr_post_pass_desc *desc);
@@ -232,5 +243,48 @@ void pb_pbr_post_pass_record(
     VkExtent2D extent,
     VkImageView hdr_scene_view,
     VkSampler hdr_scene_sampler);
+
+/* Phase 15.2 auto-exposure. Each frame the pass measures the HDR scene's
+ * log-luminance histogram (compute shader), reduces it to a target exposure,
+ * and temporally adapts the current exposure toward the target (eye
+ * adaptation). The adapted exposure lives in a UBO that the post pass samples
+ * (see pb_pbr_post_pass_desc.exposure_pass).
+ *
+ * The pass owns the histogram SSBO, the exposure UBO (persistently mapped,
+ * CPU-readable for debugging/tests), the two compute pipelines, and the
+ * adaptation parameters. Call pb_pbr_exposure_pass_record() every frame
+ * between the forward pass (which writes the HDR color) and the post pass
+ * (which tonemaps using the resulting exposure). */
+typedef struct pb_pbr_exposure_pass_desc {
+    pb_context *context;
+    const char *histogram_spv_path;  /* resolves to exposure_histogram.comp.spv */
+    const char *average_spv_path;    /* resolves to exposure_average.comp.spv   */
+
+    /* Histogram range in log2(luminance). Defaults cover ~1/1024 to ~4. */
+    float min_log_lum;   /* default -10.0 */
+    float max_log_lum;   /* default +2.0  */
+
+    /* Adaptation parameters. */
+    float initial_exposure;  /* starting value, default 1.0 */
+    float key;               /* middle-gray target, default 0.8  */
+    float min_exposure;      /* clamp lower bound, default 0.03  */
+    float max_exposure;      /* clamp upper bound, default 8.0   */
+    float speed;             /* adaptation rate, default 2.0     */
+} pb_pbr_exposure_pass_desc;
+
+pb_pbr_exposure_pass *pb_pbr_exposure_pass_create(const pb_pbr_exposure_pass_desc *desc);
+void pb_pbr_exposure_pass_destroy(pb_pbr_exposure_pass *pass);
+
+void pb_pbr_exposure_pass_record(
+    pb_pbr_exposure_pass *pass,
+    VkCommandBuffer cmd,
+    VkImageView hdr_scene_view,
+    VkSampler hdr_scene_sampler,
+    VkExtent2D extent,
+    float dt_seconds);
+
+/* Read the current adapted exposure. Only valid after a recorded frame has
+ * completed on the GPU (the UBO is persistently mapped + host coherent). */
+float pb_pbr_exposure_pass_current(pb_pbr_exposure_pass *pass);
 
 #endif
