@@ -1,0 +1,70 @@
+#version 450
+
+/* Phase 15.3 bloom — downsample pass.
+ *
+ * 16x16 workgroups. Each dispatch downsamples one mip level into the next
+ * smaller one of the bloom pyramid texture (storage image, GENERAL layout).
+ * The first dispatch (mip_index == 0) reads the HDR scene color; subsequent
+ * dispatches read the previous bloom mip. A 5-tap tent filter (Karis) both
+ * downsamples and applies a soft-knee brightness threshold so only HDR values
+ * above the threshold bloom strongly. */
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+/* The source texture. For mip 0 this is the HDR scene color (combined image
+ * sampler); for higher mips it's the previous bloom mip (also bound here as a
+ * combined image sampler via a per-mip view). */
+layout(set = 0, binding = 0) uniform sampler2D u_source;
+
+/* The destination mip (storage image, per-mip view). */
+layout(set = 0, binding = 1, rgba16f) uniform image2D u_dest;
+
+/* Must match pb_bloom_push in bloom_pass.c (and bloom_upsample.comp). */
+layout(push_constant) uniform BloomDown {
+    vec2 texel_size;   /* 1.0 / source_mip_dimensions */
+    float threshold;   /* HDR luminance above which pixels bloom (default 1.0) */
+    float spread;      /* upsample only; unused here, kept for layout parity */
+    uint source_mip;   /* which mip of u_source to read */
+} params;
+
+float luminance(vec3 c)
+{
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+/* Karis soft knee: attenuate contributions near the threshold so mid-tones
+ * don't bloom, but bright HDR values pass through nearly unchanged. */
+vec3 soft_threshold(vec3 color, float threshold)
+{
+    float l = luminance(color);
+    float knee = threshold * 0.5;
+    float soft = knee * 2.0 + 0.00001;
+    float contribution = max(l - threshold + knee, 0.0) / (soft + max(l - threshold, 0.0));
+    return color * contribution;
+}
+
+void main()
+{
+    ivec2 dest_size = imageSize(u_dest);
+    if (gl_GlobalInvocationID.x >= uint(dest_size.x) || gl_GlobalInvocationID.y >= uint(dest_size.y)) {
+        return;
+    }
+
+    /* Map this destination pixel back into the source texture's UV space. The
+     * dispatch covers destination pixels, so divide by the destination size
+     * (which is half the source size). params.texel_size is 1/source_size, so
+     * (globalID+0.5)*texel_size*2 maps destination pixels across [0,1]. */
+    vec2 uv = (vec2(gl_GlobalInvocationID.xy) + 0.5) * params.texel_size * 2.0;
+    vec2 half_texel = params.texel_size;
+
+    vec3 a = textureLod(u_source, uv, float(params.source_mip)).rgb;
+    vec3 b = textureLod(u_source, uv + vec2(half_texel.x, half_texel.y), float(params.source_mip)).rgb;
+    vec3 c = textureLod(u_source, uv + vec2(-half_texel.x, half_texel.y), float(params.source_mip)).rgb;
+    vec3 d = textureLod(u_source, uv + vec2(half_texel.x, -half_texel.y), float(params.source_mip)).rgb;
+    vec3 e = textureLod(u_source, uv + vec2(-half_texel.x, -half_texel.y), float(params.source_mip)).rgb;
+
+    vec3 color = (a * 4.0 + b + c + d + e) / 8.0;
+    color = soft_threshold(color, params.threshold);
+
+    imageStore(u_dest, ivec2(gl_GlobalInvocationID.xy), vec4(color, 1.0));
+}

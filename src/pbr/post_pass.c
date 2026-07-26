@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "bloom_pass.h"
 #include "core/log.h"
 #include "exposure_pass.h"
 #include "pb_context_internal.h"
@@ -10,6 +11,7 @@
 #include "peaberry/peaberry_vk.h"
 #include "rhi/buffer.h"
 #include "rhi/shader.h"
+#include "rhi/texture.h"
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -35,6 +37,13 @@ typedef struct pb_pbr_post_pass {
     pb_pbr_exposure_pass *exposure_pass;
     pb_rhi_buffer static_exposure_ubo;
 
+    /* Bloom result (Phase 15.3). If bloom_pass is set, binding 2 points at its
+     * result texture; otherwise a 1x1 black texture is bound so tonemap adds
+     * zero bloom (backward compat). bloom_intensity is pushed each frame. */
+    pb_pbr_bloom_pass *bloom_pass;
+    pb_rhi_texture black_fallback;
+    float bloom_intensity;
+
     /* Cached (view, sampler) currently bound to descriptor_set. The HDR scene
      * view is usually the same every frame, so we skip vkUpdateDescriptorSets
      * when unchanged — this also avoids the "descriptor set in use" race that
@@ -42,6 +51,7 @@ typedef struct pb_pbr_post_pass {
      * frame's still-pending command buffer. */
     VkImageView bound_view;
     VkSampler bound_sampler;
+    VkImageView bound_bloom_view;
     bool descriptor_written;
 } pb_pbr_post_pass;
 
@@ -78,6 +88,12 @@ static bool create_descriptor_set_layout(pb_context *context, VkDescriptorSetLay
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
+        {
+            .binding = 2,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
@@ -101,10 +117,18 @@ static bool create_pipeline(
 {
     VkDevice device = pb_context_device(context);
 
+    VkPushConstantRange push = {
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .offset = 0,
+        .size = sizeof(float),   /* bloom_intensity */
+    };
+
     VkPipelineLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = 1,
         .pSetLayouts = &set_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push,
     };
 
     if (vkCreatePipelineLayout(device, &layout_info, NULL, out_layout) != VK_SUCCESS) {
@@ -216,7 +240,7 @@ static bool create_pipeline(
 static bool allocate_descriptor_set(pb_context *context, VkDescriptorSetLayout layout, VkDescriptorPool *out_pool, VkDescriptorSet *out_set)
 {
     VkDescriptorPoolSize pool_sizes[] = {
-        { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1 },
+        { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 2 },
         { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1 },
     };
 
@@ -254,6 +278,8 @@ pb_pbr_post_pass *pb_pbr_post_pass_create(const pb_pbr_post_pass_desc *desc)
     }
     pass->context = desc->context;
     pass->exposure_pass = desc->exposure_pass;
+    pass->bloom_pass = desc->bloom_pass;
+    pass->bloom_intensity = desc->bloom_pass ? desc->bloom_intensity : 0.0f;
 
     /* If no auto-exposure pass is wired in, seed a static UBO with the
      * requested fixed exposure. */
@@ -304,6 +330,43 @@ pb_pbr_post_pass *pb_pbr_post_pass_create(const pb_pbr_post_pass_desc *desc)
     };
     vkUpdateDescriptorSets(device, 1, &exposure_write, 0, NULL);
 
+    /* Write binding 2 (bloom result). When no bloom pass is wired in, bind a
+     * 1x1 black texture so tonemap adds zero bloom (backward compat). */
+    if (!pass->bloom_pass) {
+        if (!pb_rhi_texture_create_solid_rgba8(desc->context, (uint8_t[]){0, 0, 0, 255}, false, &pass->black_fallback)) {
+            pb_pbr_post_pass_destroy(pass);
+            return NULL;
+        }
+    }
+    VkImageView bloom_view = pass->bloom_pass
+        ? pb_pbr_bloom_pass_result_view(pass->bloom_pass)
+        : pass->black_fallback.view;
+    VkSampler bloom_sampler = pass->bloom_pass
+        ? pb_pbr_bloom_pass_sampler(pass->bloom_pass)
+        : pass->black_fallback.sampler;
+
+    /* Only write binding 2 now if the view is valid. The bloom pass creates its
+     * texture lazily on the first record(), so its result view may be NULL
+     * here — in that case the record()-time rebinding fills it in. Writing a
+     * NULL view would corrupt the descriptor set. */
+    if (bloom_view != VK_NULL_HANDLE) {
+        VkDescriptorImageInfo bloom_info = {
+            .sampler = bloom_sampler,
+            .imageView = bloom_view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        VkWriteDescriptorSet bloom_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
+            .dstBinding = 2,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &bloom_info,
+        };
+        vkUpdateDescriptorSets(device, 1, &bloom_write, 0, NULL);
+        pass->bound_bloom_view = bloom_view;
+    }
+
     return pass;
 }
 
@@ -335,6 +398,9 @@ void pb_pbr_post_pass_destroy(pb_pbr_post_pass *pass)
         }
         if (pass->static_exposure_ubo.handle != VK_NULL_HANDLE) {
             pb_rhi_buffer_destroy(pass->context, &pass->static_exposure_ubo);
+        }
+        if (pass->black_fallback.image != VK_NULL_HANDLE) {
+            pb_rhi_texture_destroy(pass->context, &pass->black_fallback);
         }
     }
     free(pass);
@@ -380,6 +446,31 @@ void pb_pbr_post_pass_record(
         pass->descriptor_written = true;
     }
 
+    /* Phase 15.3: rebind bloom (binding 2) when its result view changes. The
+     * bloom pass creates its pyramid lazily on the first record() and may
+     * resize it, so the view handle can differ from what was bound at create
+     * time. Track the last bound bloom view to skip redundant writes. */
+    if (pass->bloom_pass) {
+        VkImageView bloom_view = pb_pbr_bloom_pass_result_view(pass->bloom_pass);
+        if (bloom_view != pass->bound_bloom_view) {
+            VkDescriptorImageInfo bloom_info = {
+                .sampler = pb_pbr_bloom_pass_sampler(pass->bloom_pass),
+                .imageView = bloom_view,
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
+            VkWriteDescriptorSet write = {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = pass->descriptor_set,
+                .dstBinding = 2,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .pImageInfo = &bloom_info,
+            };
+            vkUpdateDescriptorSets(pb_context_device(pass->context), 1, &write, 0, NULL);
+            pass->bound_bloom_view = bloom_view;
+        }
+    }
+
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass->pipeline);
     vkCmdBindDescriptorSets(
         cmd,
@@ -406,6 +497,9 @@ void pb_pbr_post_pass_record(
         .extent = extent,
     };
     vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    /* Phase 15.3: push bloom_intensity (0 when no bloom pass is wired in). */
+    vkCmdPushConstants(cmd, pass->pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &pass->bloom_intensity);
 
     /* Fullscreen triangle generated by the vertex shader from gl_VertexIndex. */
     vkCmdDraw(cmd, 3, 1, 0, 0);

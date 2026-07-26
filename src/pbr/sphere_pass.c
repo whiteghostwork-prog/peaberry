@@ -16,10 +16,14 @@
 
 #include "peaberry/peaberry_render.h"
 
+#include "peaberry/peaberry_gltf.h"
 #include "peaberry/peaberry_math.h"
+#include "pbr/gltf_scene_internal.h"
 #include "pbr/ibl.h"
+#include "pbr/vertex.h"
 #include "rhi/alloc.h"
 #include "rhi/buffer.h"
+#include "rhi/cmd_submit.h"
 #include "rhi/mesh.h"
 #include "rhi/texture.h"
 
@@ -28,8 +32,18 @@
 #include "peaberry/peaberry_vk.h"
 #include "rhi/shader.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Must match pbr_forward.vert push block (and pb_pbr_push_constants). */
+typedef struct pb_sphere_push {
+    pb_mat4 model;
+    uint32_t skinned;
+    uint32_t palette_base;
+    uint32_t instanced;
+    uint32_t instance_base;
+} pb_sphere_push;
 
 typedef struct pb_frame_ubo {
     pb_mat4 view;
@@ -43,20 +57,8 @@ typedef struct pb_frame_ubo {
     float shadow_bias_slope;
     float shadow_texel_size;
     float shadow_debug;
-    float _pad;
+    float ibl_intensity;
 } pb_frame_ubo;
-
-typedef struct pb_material_ubo {
-    float light_dir[3];
-    float _pad0;
-    float albedo_factor[3];
-    float metallic_factor;
-    float light_color[3];
-    float roughness_factor;
-    float occlusion_strength;
-    float emissive_factor[3];
-    float _pad1;
-} pb_material_ubo;
 
 struct pb_sphere_pass {
     pb_context *context;
@@ -67,6 +69,11 @@ struct pb_sphere_pass {
     VkDescriptorSet descriptor_set;
     pb_rhi_buffer frame_buffer;
     pb_rhi_buffer material_buffer;
+    pb_rhi_buffer light_buffer;
+    /* Dummy SSBOs so pbr_forward.vert bindings 10/12 are valid when
+     * skinned/instanced stay 0 (sphere pass never skins or instances). */
+    pb_rhi_buffer skin_fallback_buffer;
+    pb_rhi_buffer instance_fallback_buffer;
     pb_rhi_texture albedo_texture;
     pb_rhi_texture metallic_roughness_texture;
     pb_rhi_texture normal_texture;
@@ -76,11 +83,18 @@ struct pb_sphere_pass {
     VkDeviceMemory shadow_fallback_memory;
     VkImageView shadow_fallback_view;
     VkSampler shadow_fallback_sampler;
+    /* 1x1 depth cubemap bound to all PB_POINT_SHADOW_MAX slots (unused when
+     * only a directional light is present, but the frag shader declares them). */
+    VkImage point_shadow_fallback_image;
+    VkDeviceMemory point_shadow_fallback_memory;
+    VkImageView point_shadow_fallback_view;
+    VkSampler point_shadow_fallback_sampler;
     pb_ibl_environment ibl;
     pb_rhi_mesh mesh;
     VkShaderModule vert_module;
     VkShaderModule frag_module;
     pb_material_ubo material;
+    pb_light_list_ubo lights;
     float exposure;
     float prefilter_max_lod;
 };
@@ -99,8 +113,30 @@ static bool create_uniform_buffers(struct pb_sphere_pass *pass)
         .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
     };
 
-    return pb_rhi_buffer_create(pass->context, &frame_desc, &pass->frame_buffer) &&
-           pb_rhi_buffer_create(pass->context, &material_desc, &pass->material_buffer);
+    pb_rhi_buffer_desc light_desc = {
+        .size = sizeof(pb_light_list_ubo),
+        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
+    };
+
+    pb_rhi_buffer_desc ssbo_desc = {
+        .size = sizeof(pb_mat4),
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        .memory_usage = PB_RHI_MEMORY_CPU_TO_GPU,
+    };
+
+    if (!pb_rhi_buffer_create(pass->context, &frame_desc, &pass->frame_buffer) ||
+        !pb_rhi_buffer_create(pass->context, &material_desc, &pass->material_buffer) ||
+        !pb_rhi_buffer_create(pass->context, &light_desc, &pass->light_buffer) ||
+        !pb_rhi_buffer_create(pass->context, &ssbo_desc, &pass->skin_fallback_buffer) ||
+        !pb_rhi_buffer_create(pass->context, &ssbo_desc, &pass->instance_fallback_buffer)) {
+        return false;
+    }
+
+    pb_mat4 identity = {0};
+    pb_mat4_identity(identity);
+    return pb_rhi_buffer_upload(pass->context, &pass->skin_fallback_buffer, identity, sizeof(identity)) &&
+           pb_rhi_buffer_upload(pass->context, &pass->instance_fallback_buffer, identity, sizeof(identity));
 }
 
 static bool create_descriptor_set_layout(struct pb_sphere_pass *pass)
@@ -167,16 +203,40 @@ static bool create_descriptor_set_layout(struct pb_sphere_pass *pass)
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
         {
+            .binding = 10,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        },
+        {
             .binding = 11,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 12,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        },
+        {
+            .binding = 13,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 14,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = PB_POINT_SHADOW_MAX,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
     };
 
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 11,
+        .bindingCount = sizeof(bindings) / sizeof(bindings[0]),
         .pBindings = bindings,
     };
 
@@ -259,7 +319,130 @@ static bool create_shadow_fallback(struct pb_sphere_pass *pass)
         .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
     };
 
-    return vkCreateSampler(device, &sampler_info, NULL, &pass->shadow_fallback_sampler) == VK_SUCCESS;
+    if (vkCreateSampler(device, &sampler_info, NULL, &pass->shadow_fallback_sampler) != VK_SUCCESS) {
+        return false;
+    }
+
+    /* 1x1 depth cubemap for unused point-shadow slots. */
+    VkImageCreateInfo cube_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_D32_SFLOAT,
+        .extent = { 1, 1, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 6,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+
+    if (vkCreateImage(device, &cube_info, NULL, &pass->point_shadow_fallback_image) != VK_SUCCESS) {
+        return false;
+    }
+
+    vkGetImageMemoryRequirements(device, pass->point_shadow_fallback_image, &mem_reqs);
+    const uint32_t cube_mem_type = pb_rhi_find_memory_type(
+        vk, mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (cube_mem_type == UINT32_MAX) {
+        return false;
+    }
+
+    VkMemoryAllocateInfo cube_alloc = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_reqs.size,
+        .memoryTypeIndex = cube_mem_type,
+    };
+    if (vkAllocateMemory(device, &cube_alloc, NULL, &pass->point_shadow_fallback_memory) != VK_SUCCESS) {
+        return false;
+    }
+    if (vkBindImageMemory(
+            device,
+            pass->point_shadow_fallback_image,
+            pass->point_shadow_fallback_memory,
+            0) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkImageViewCreateInfo cube_view = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = pass->point_shadow_fallback_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_CUBE,
+        .format = VK_FORMAT_D32_SFLOAT,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .levelCount = 1,
+            .layerCount = 6,
+        },
+    };
+    if (vkCreateImageView(device, &cube_view, NULL, &pass->point_shadow_fallback_view) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkSamplerCreateInfo cube_sampler = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .compareEnable = VK_TRUE,
+        .compareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+        .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+    };
+    return vkCreateSampler(device, &cube_sampler, NULL, &pass->point_shadow_fallback_sampler) ==
+           VK_SUCCESS;
+}
+
+static void record_shadow_fallback_layouts(VkCommandBuffer cmd, void *user_data)
+{
+    struct pb_sphere_pass *pass = user_data;
+
+    VkImageMemoryBarrier barriers[2] = {
+        {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = pass->shadow_fallback_image,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                .levelCount = 1,
+                .layerCount = 1,
+            },
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = pass->point_shadow_fallback_image,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                .levelCount = 1,
+                .layerCount = 6,
+            },
+        },
+    };
+
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0,
+        0,
+        NULL,
+        0,
+        NULL,
+        2,
+        barriers);
 }
 
 static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
@@ -269,18 +452,22 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
     VkDescriptorPoolSize pool_sizes[] = {
         {
             .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 2,
+            .descriptorCount = 3,
         },
         {
             .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 9,
+            .descriptorCount = 9 + PB_POINT_SHADOW_MAX,
+        },
+        {
+            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 2,
         },
     };
 
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .maxSets = 1,
-        .poolSizeCount = 2,
+        .poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]),
         .pPoolSizes = pool_sizes,
     };
 
@@ -309,6 +496,12 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         .buffer = pb_rhi_buffer_handle(&pass->material_buffer),
         .offset = 0,
         .range = sizeof(pb_material_ubo),
+    };
+
+    VkDescriptorBufferInfo light_info = {
+        .buffer = pb_rhi_buffer_handle(&pass->light_buffer),
+        .offset = 0,
+        .range = sizeof(pb_light_list_ubo),
     };
 
     VkDescriptorImageInfo albedo_info = {
@@ -364,6 +557,27 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         .imageView = pass->shadow_fallback_view,
         .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
     };
+
+    VkDescriptorBufferInfo skin_info = {
+        .buffer = pb_rhi_buffer_handle(&pass->skin_fallback_buffer),
+        .offset = 0,
+        .range = sizeof(pb_mat4),
+    };
+
+    VkDescriptorBufferInfo instance_info = {
+        .buffer = pb_rhi_buffer_handle(&pass->instance_fallback_buffer),
+        .offset = 0,
+        .range = sizeof(pb_mat4),
+    };
+
+    VkDescriptorImageInfo point_shadow_infos[PB_POINT_SHADOW_MAX];
+    for (uint32_t i = 0; i < PB_POINT_SHADOW_MAX; ++i) {
+        point_shadow_infos[i] = (VkDescriptorImageInfo){
+            .sampler = pass->point_shadow_fallback_sampler,
+            .imageView = pass->point_shadow_fallback_view,
+            .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        };
+    }
 
     VkWriteDescriptorSet writes[] = {
         {
@@ -449,14 +663,46 @@ static bool create_descriptor_pool_and_set(struct pb_sphere_pass *pass)
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = pass->descriptor_set,
+            .dstBinding = 10,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .pBufferInfo = &skin_info,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
             .dstBinding = 11,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
             .pImageInfo = &shadow_info,
         },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
+            .dstBinding = 12,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .pBufferInfo = &instance_info,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
+            .dstBinding = 13,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .pBufferInfo = &light_info,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = pass->descriptor_set,
+            .dstBinding = 14,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = PB_POINT_SHADOW_MAX,
+            .pImageInfo = point_shadow_infos,
+        },
     };
 
-    vkUpdateDescriptorSets(device, 11, writes, 0, NULL);
+    vkUpdateDescriptorSets(device, sizeof(writes) / sizeof(writes[0]), writes, 0, NULL);
     return true;
 }
 
@@ -486,7 +732,7 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
 
     VkVertexInputBindingDescription binding = {
         .binding = 0,
-        .stride = 12 * sizeof(float),
+        .stride = sizeof(pb_pbr_vertex),
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
 
@@ -495,25 +741,37 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
             .location = 0,
             .binding = 0,
             .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .offset = 0,
+            .offset = offsetof(pb_pbr_vertex, pos),
         },
         {
             .location = 1,
             .binding = 0,
             .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .offset = 3 * sizeof(float),
+            .offset = offsetof(pb_pbr_vertex, normal),
         },
         {
             .location = 2,
             .binding = 0,
             .format = VK_FORMAT_R32G32_SFLOAT,
-            .offset = 6 * sizeof(float),
+            .offset = offsetof(pb_pbr_vertex, uv),
         },
         {
             .location = 3,
             .binding = 0,
             .format = VK_FORMAT_R32G32B32A32_SFLOAT,
-            .offset = 8 * sizeof(float),
+            .offset = offsetof(pb_pbr_vertex, tangent),
+        },
+        {
+            .location = 4,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .offset = offsetof(pb_pbr_vertex, joints),
+        },
+        {
+            .location = 5,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .offset = offsetof(pb_pbr_vertex, weights),
         },
     };
 
@@ -521,7 +779,7 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1,
         .pVertexBindingDescriptions = &binding,
-        .vertexAttributeDescriptionCount = 4,
+        .vertexAttributeDescriptionCount = sizeof(attributes) / sizeof(attributes[0]),
         .pVertexAttributeDescriptions = attributes,
     };
 
@@ -588,7 +846,7 @@ static bool create_pipeline(struct pb_sphere_pass *pass, const pb_sphere_pass_de
     VkPushConstantRange push_range = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
         .offset = 0,
-        .size = sizeof(pb_mat4),
+        .size = sizeof(pb_sphere_push),
     };
 
     VkPipelineLayoutCreateInfo layout_info = {
@@ -646,9 +904,11 @@ static void update_uniforms(struct pb_sphere_pass *pass, VkExtent2D extent, floa
     frame.camera_pos[2] = eye[2];
     frame.exposure = pass->exposure;
     frame.shadows_enabled = 0.0f;
+    frame.ibl_intensity = 1.0f;
 
     pb_rhi_buffer_upload(pass->context, &pass->frame_buffer, &frame, sizeof(frame));
     pb_rhi_buffer_upload(pass->context, &pass->material_buffer, &pass->material, sizeof(pass->material));
+    pb_rhi_buffer_upload(pass->context, &pass->light_buffer, &pass->lights, sizeof(pass->lights));
 }
 
 pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
@@ -671,22 +931,30 @@ pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
     }
 
     pass->context = desc->context;
-    pass->material.albedo_factor[0] = desc->albedo_factor[0];
-    pass->material.albedo_factor[1] = desc->albedo_factor[1];
-    pass->material.albedo_factor[2] = desc->albedo_factor[2];
+    /* Default albedo factor is white when the desc leaves it zeroed. */
+    const float ax = desc->albedo_factor[0];
+    const float ay = desc->albedo_factor[1];
+    const float az = desc->albedo_factor[2];
+    const bool has_albedo = ax != 0.0f || ay != 0.0f || az != 0.0f;
+    pass->material.albedo_factor[0] = has_albedo ? ax : 1.0f;
+    pass->material.albedo_factor[1] = has_albedo ? ay : 1.0f;
+    pass->material.albedo_factor[2] = has_albedo ? az : 1.0f;
     pass->material.metallic_factor = desc->metallic_factor;
-    pass->material.roughness_factor = desc->roughness_factor;
-    pass->material.light_color[0] = 4.0f;
-    pass->material.light_color[1] = 4.0f;
-    pass->material.light_color[2] = 4.0f;
-    /* Direction from origin toward the light (upper-right-front). */
-    pass->material.light_dir[0] = 0.5f;
-    pass->material.light_dir[1] = 0.8f;
-    pass->material.light_dir[2] = 0.4f;
+    pass->material.roughness_factor = desc->roughness_factor > 0.0f ? desc->roughness_factor : 1.0f;
     pass->material.occlusion_strength = 1.0f;
-    pass->material.emissive_factor[0] = 0.0f;
-    pass->material.emissive_factor[1] = 0.0f;
-    pass->material.emissive_factor[2] = 0.0f;
+    pass->material.emissive_strength = 1.0f;
+    pass->material.base_color_alpha = 1.0f;
+
+    /* One bright directional light (matches the old embedded light_dir/color). */
+    pass->lights.light_count = 1;
+    pass->lights.lights[0].type = PB_LIGHT_TYPE_DIRECTIONAL;
+    pass->lights.lights[0].direction[0] = 0.5f;
+    pass->lights.lights[0].direction[1] = 0.8f;
+    pass->lights.lights[0].direction[2] = 0.4f;
+    pass->lights.lights[0].color[0] = 4.0f;
+    pass->lights.lights[0].color[1] = 4.0f;
+    pass->lights.lights[0].color[2] = 4.0f;
+    pass->lights.lights[0].shadow_map_index = UINT32_MAX;
     pass->exposure = desc->exposure > 0.0f ? desc->exposure : 1.0f;
 
     pb_rhi_mesh_uv_sphere_desc mesh_desc = {
@@ -715,6 +983,7 @@ pb_sphere_pass *pb_sphere_pass_create(const pb_sphere_pass_desc *desc)
             },
             &pass->ibl) ||
         !create_shadow_fallback(pass) ||
+        !pb_rhi_submit_one_shot(pass->context, record_shadow_fallback_layouts, pass) ||
         !create_descriptor_pool_and_set(pass) ||
         !pb_rhi_mesh_create_uv_sphere(pass->context, &mesh_desc, &pass->mesh) ||
         !create_pipeline(pass, desc)) {
@@ -753,6 +1022,9 @@ void pb_sphere_pass_destroy(pb_sphere_pass *pass)
         }
         pb_rhi_buffer_destroy(pass->context, &pass->frame_buffer);
         pb_rhi_buffer_destroy(pass->context, &pass->material_buffer);
+        pb_rhi_buffer_destroy(pass->context, &pass->light_buffer);
+        pb_rhi_buffer_destroy(pass->context, &pass->skin_fallback_buffer);
+        pb_rhi_buffer_destroy(pass->context, &pass->instance_fallback_buffer);
         pb_rhi_texture_destroy(pass->context, &pass->albedo_texture);
         pb_rhi_texture_destroy(pass->context, &pass->metallic_roughness_texture);
         pb_rhi_texture_destroy(pass->context, &pass->normal_texture);
@@ -769,6 +1041,18 @@ void pb_sphere_pass_destroy(pb_sphere_pass *pass)
         }
         if (pass->shadow_fallback_memory) {
             vkFreeMemory(device, pass->shadow_fallback_memory, NULL);
+        }
+        if (pass->point_shadow_fallback_sampler) {
+            vkDestroySampler(device, pass->point_shadow_fallback_sampler, NULL);
+        }
+        if (pass->point_shadow_fallback_view) {
+            vkDestroyImageView(device, pass->point_shadow_fallback_view, NULL);
+        }
+        if (pass->point_shadow_fallback_image) {
+            vkDestroyImage(device, pass->point_shadow_fallback_image, NULL);
+        }
+        if (pass->point_shadow_fallback_memory) {
+            vkFreeMemory(device, pass->point_shadow_fallback_memory, NULL);
         }
         pb_ibl_environment_destroy(pass->context, &pass->ibl);
         pb_rhi_mesh_destroy(pass->context, &pass->mesh);
@@ -851,13 +1135,16 @@ void pb_sphere_pass_record_mesh(
         return;
     }
 
+    pb_sphere_push push = {0};
+    memcpy(push.model, model, sizeof(push.model));
+
     vkCmdPushConstants(
         cmd,
         pass->pipeline_layout,
         VK_SHADER_STAGE_VERTEX_BIT,
         0,
-        sizeof(pb_mat4),
-        model);
+        sizeof(push),
+        &push);
 
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);

@@ -80,6 +80,8 @@ peaberry_compile_glsl(PEABERRY_SHADER_SPIRV
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/tonemap.frag
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/exposure_histogram.comp
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/exposure_average.comp
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_downsample.comp
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_upsample.comp
 )
 
 add_subdirectory(src)

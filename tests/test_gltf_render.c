@@ -36,6 +36,7 @@ typedef struct gltf_render_fixture {
     pb_pbr_forward_pass *pass;
     pb_pbr_post_pass *post;
     pb_pbr_exposure_pass *exposure;
+    pb_pbr_bloom_pass *bloom;
     pb_gltf_scene *scene;
     /* HDR scene pass: forward writes linear HDR into hdr_color (with depth).
      * Transitioned to SHADER_READ before the post pass samples it. */
@@ -371,6 +372,10 @@ static void destroy_fixture(gltf_render_fixture *fx)
         pb_pbr_exposure_pass_destroy(fx->exposure);
         fx->exposure = NULL;
     }
+    if (fx->bloom) {
+        pb_pbr_bloom_pass_destroy(fx->bloom);
+        fx->bloom = NULL;
+    }
     if (fx->pass) {
         pb_pbr_forward_pass_destroy(fx->pass);
         fx->pass = NULL;
@@ -575,7 +580,6 @@ static void record_readback(VkCommandBuffer cmd, void *user_data)
 
 static bool read_center_pixel(gltf_render_fixture *fx, uint8_t rgba[4])
 {
-    VkDevice device = pb_context_device(fx->context);
     const VkDeviceSize image_size = (VkDeviceSize)fx->extent.width * fx->extent.height * 4;
 
     pb_rhi_buffer staging = {0};
@@ -592,14 +596,9 @@ static bool read_center_pixel(gltf_render_fixture *fx, uint8_t rgba[4])
     readback_ctx ctx = { .fixture = fx, .staging = &staging };
 
     const bool copied = pb_rhi_submit_one_shot(fx->context, record_readback, &ctx);
+    void *mapped = pb_rhi_buffer_mapped(&staging);
 
-    if (!copied) {
-        pb_rhi_buffer_destroy(fx->context, &staging);
-        return false;
-    }
-
-    void *mapped = NULL;
-    if (vkMapMemory(device, staging.memory, 0, image_size, 0, &mapped) != VK_SUCCESS) {
+    if (!copied || !mapped) {
         pb_rhi_buffer_destroy(fx->context, &staging);
         return false;
     }
@@ -609,7 +608,6 @@ static bool read_center_pixel(gltf_render_fixture *fx, uint8_t rgba[4])
     const uint8_t *pixels = mapped;
     const size_t offset = ((size_t)cy * fx->extent.width + cx) * 4;
     memcpy(rgba, pixels + offset, 4);
-    vkUnmapMemory(device, staging.memory);
     pb_rhi_buffer_destroy(fx->context, &staging);
     return true;
 }
@@ -623,21 +621,50 @@ static void record_sphere_frame(VkCommandBuffer cmd, void *user_data)
 {
     sphere_record_ctx *ctx = user_data;
     gltf_render_fixture *fx = ctx->fixture;
-    VkClearValue clears[2] = {
+
+    /* Phase 15: pbr_forward.frag writes linear HDR — render to HDR, then tonemap. */
+    VkClearValue hdr_clears[2] = {
         { .color = { { 0.02f, 0.02f, 0.025f, 1.0f } } },
         { .depthStencil = { 1.0f, 0 } },
     };
-    VkRenderPassBeginInfo rp_begin = {
+    VkRenderPassBeginInfo hdr_begin = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = fx->hdr_render_pass,
+        .framebuffer = fx->hdr_framebuffer,
+        .renderArea = { .extent = fx->extent },
+        .clearValueCount = 2,
+        .pClearValues = hdr_clears,
+    };
+    vkCmdBeginRenderPass(cmd, &hdr_begin, VK_SUBPASS_CONTENTS_INLINE);
+    pb_sphere_pass_record(ctx->pass, cmd, fx->extent, 0.0f);
+    vkCmdEndRenderPass(cmd);
+
+    pb_rhi_texture_transition_layout(
+        cmd,
+        &fx->hdr_color,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        1,
+        1);
+
+    VkRenderPassBeginInfo ldr_begin = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = fx->ldr_render_pass,
         .framebuffer = fx->ldr_framebuffer,
         .renderArea = { .extent = fx->extent },
-        .clearValueCount = 2,
-        .pClearValues = clears,
+        .clearValueCount = 0,
     };
-    vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-    pb_sphere_pass_record(ctx->pass, cmd, fx->extent, 0.0f);
+    vkCmdBeginRenderPass(cmd, &ldr_begin, VK_SUBPASS_CONTENTS_INLINE);
+    pb_pbr_post_pass_record(fx->post, cmd, fx->extent, fx->hdr_color.view, fx->hdr_color.sampler);
     vkCmdEndRenderPass(cmd);
+
+    pb_rhi_texture_transition_layout(
+        cmd,
+        &fx->hdr_color,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        1,
+        1);
 }
 
 PB_TEST(test_sphere_forward_pass_pixel)
@@ -697,7 +724,7 @@ PB_TEST(test_sphere_forward_pass_pixel)
     pb_sphere_pass *sphere = pb_sphere_pass_create(
         &(pb_sphere_pass_desc){
             .context = ctx,
-            .render_pass = fx.ldr_render_pass,
+            .render_pass = fx.hdr_render_pass,
             .vert_spv_path = vert_spv,
             .frag_spv_path = frag_spv,
             .albedo_texture_path = albedo,
@@ -711,6 +738,9 @@ PB_TEST(test_sphere_forward_pass_pixel)
         pb_context_destroy(ctx);
         PB_TEST_SKIP("sphere pass create failed");
     }
+
+    fx.post = create_default_post_pass(&fx, 1.2f);
+    PB_ASSERT(fx.post != NULL);
 
     sphere_record_ctx sctx = { .pass = sphere, .fixture = &fx };
     PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_sphere_frame, &sctx));
@@ -1507,6 +1537,213 @@ PB_TEST(test_gltf_auto_exposure)
     PB_TEST_PASS();
 }
 
+/* Phase 15.3: a record helper that runs the bloom pass between the forward
+ * pass and the tonemap, so bloom has the HDR scene color to downsample. */
+static void record_gltf_bloom_frame(VkCommandBuffer cmd, void *user_data)
+{
+    gltf_render_record_ctx *ctx = user_data;
+    gltf_render_fixture *fx = ctx->fixture;
+
+    pb_pbr_forward_pass_record_shadow_map(fx->pass, cmd, fx->extent, fx->scene);
+
+    VkClearValue hdr_clears[2] = {
+        { .color = { { 0.02f, 0.02f, 0.025f, 1.0f } } },
+        { .depthStencil = { 1.0f, 0 } },
+    };
+    VkRenderPassBeginInfo hdr_begin = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = fx->hdr_render_pass,
+        .framebuffer = fx->hdr_framebuffer,
+        .renderArea = { .extent = fx->extent },
+        .clearValueCount = 2,
+        .pClearValues = hdr_clears,
+    };
+    vkCmdBeginRenderPass(cmd, &hdr_begin, VK_SUBPASS_CONTENTS_INLINE);
+    pb_pbr_forward_pass_record(fx->pass, cmd, fx->extent, fx->scene, ctx->time_seconds);
+    vkCmdEndRenderPass(cmd);
+
+    pb_rhi_texture_transition_layout(
+        cmd, &fx->hdr_color,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 1);
+
+    /* Bloom: downsample + upsample the HDR scene into the bloom pyramid. */
+    if (fx->bloom) {
+        pb_pbr_bloom_pass_record(fx->bloom, cmd, fx->hdr_color.view, fx->hdr_color.sampler, fx->extent);
+    }
+
+    VkRenderPassBeginInfo ldr_begin = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = fx->ldr_render_pass,
+        .framebuffer = fx->ldr_framebuffer,
+        .renderArea = { .extent = fx->extent },
+        .clearValueCount = 0,
+    };
+    vkCmdBeginRenderPass(cmd, &ldr_begin, VK_SUBPASS_CONTENTS_INLINE);
+    pb_pbr_post_pass_record(fx->post, cmd, fx->extent, fx->hdr_color.view, fx->hdr_color.sampler);
+    vkCmdEndRenderPass(cmd);
+
+    pb_rhi_texture_transition_layout(
+        cmd, &fx->hdr_color,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 1);
+}
+
+/* Phase 15.3: bloom must spread bright HDR pixels into their neighbors. Render
+ * a cube with a very bright point light (HDR >> 1.0) WITH bloom and WITHOUT
+ * bloom; the WITH-bloom render must have a brighter region surrounding the
+ * bright spot (the bloom halo). */
+PB_TEST(test_gltf_bloom_pixel)
+{
+    char path[512];
+    char vert_spv[512];
+    char frag_spv[512];
+    PB_ASSERT(snprintf(path, sizeof(path), "%s/models/test_cube.gltf", PEABERRY_ASSET_DIR) < (int)sizeof(path));
+    PB_ASSERT(snprintf(vert_spv, sizeof(vert_spv), "%s/pbr_forward.vert.spv", PEABERRY_SHADER_DIR) < (int)sizeof(vert_spv));
+    PB_ASSERT(snprintf(frag_spv, sizeof(frag_spv), "%s/pbr_forward.frag.spv", PEABERRY_SHADER_DIR) < (int)sizeof(frag_spv));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry bloom test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    gltf_render_fixture fx = {0};
+    fx.context = ctx;
+    fx.extent = (VkExtent2D){ 256, 256 };
+
+    if (!create_depth_image(&fx) ||
+        !pb_rhi_texture_create_2d(
+            ctx, fx.extent.width, fx.extent.height, 1,
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            &fx.hdr_color) ||
+        !pb_rhi_texture_create_2d(
+            ctx, fx.extent.width, fx.extent.height, 1,
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            &fx.ldr_color) ||
+        !create_render_passes(&fx) ||
+        !create_framebuffers(&fx)) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("failed to create headless render target");
+    }
+
+    fx.scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    if (!fx.scene) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("test_cube.gltf missing or load failed");
+    }
+
+    fx.pass = pb_pbr_forward_pass_create(
+        &(pb_pbr_forward_pass_desc){
+            .context = ctx,
+            .render_pass = fx.hdr_render_pass,
+            .vert_spv_path = vert_spv,
+            .frag_spv_path = frag_spv,
+            .ibl_shader_dir = PEABERRY_SHADER_DIR,
+            .exposure = 1.0f,
+        });
+    PB_ASSERT(fx.pass != NULL);
+    pb_pbr_forward_pass_set_scene(fx.pass, fx.scene);
+
+    /* A bright directional light (HDR intensity well above the bloom threshold
+     * of 1.0) so the cube's lit faces produce a strong HDR signal that blooms. */
+    pb_light light = {0};
+    light.type = PB_LIGHT_TYPE_DIRECTIONAL;
+    light.direction[0] = 0.5f; light.direction[1] = 0.8f; light.direction[2] = 0.4f;
+    light.color[0] = 8.0f; light.color[1] = 8.0f; light.color[2] = 8.0f;
+    light.shadow_map_index = UINT32_MAX;
+    pb_pbr_forward_pass_set_lights(fx.pass, &light, 1);
+
+    char down_spv[512];
+    char up_spv[512];
+    char post_vert[512];
+    char post_frag[512];
+    PB_ASSERT(snprintf(down_spv, sizeof down_spv, "%s/bloom_downsample.comp.spv", PEABERRY_SHADER_DIR) < (int)sizeof(down_spv));
+    PB_ASSERT(snprintf(up_spv, sizeof up_spv, "%s/bloom_upsample.comp.spv", PEABERRY_SHADER_DIR) < (int)sizeof(up_spv));
+    PB_ASSERT(snprintf(post_vert, sizeof post_vert, "%s/fullscreen.vert.spv", PEABERRY_SHADER_DIR) < (int)sizeof(post_vert));
+    PB_ASSERT(snprintf(post_frag, sizeof post_frag, "%s/tonemap.frag.spv", PEABERRY_SHADER_DIR) < (int)sizeof(post_frag));
+
+    fx.bloom = pb_pbr_bloom_pass_create(
+        &(pb_pbr_bloom_pass_desc){
+            .context = ctx,
+            .downsample_spv_path = down_spv,
+            .upsample_spv_path = up_spv,
+            .threshold = 0.001f,
+        });
+    PB_ASSERT(fx.bloom != NULL);
+
+    gltf_render_record_ctx record_ctx = { .fixture = &fx, .time_seconds = 0.0f };
+
+    /* Render 1: WITHOUT bloom (static exposure, black fallback). */
+    fx.post = pb_pbr_post_pass_create(
+        &(pb_pbr_post_pass_desc){
+            .context = ctx, .render_pass = fx.ldr_render_pass,
+            .vert_spv_path = post_vert, .frag_spv_path = post_frag,
+            .exposure = 1.0f,
+        });
+    PB_ASSERT(fx.post != NULL);
+    /* Temporarily null the bloom so the helper's record is a no-op for bloom;
+     * we render via record_gltf_bloom_frame which guards on fx.bloom. */
+    pb_pbr_bloom_pass *saved_bloom = fx.bloom;
+    fx.bloom = NULL;
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_bloom_frame, &record_ctx));
+    uint8_t without_bloom[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, without_bloom));
+    pb_pbr_post_pass_destroy(fx.post);
+    fx.post = NULL;
+    fx.bloom = saved_bloom;
+
+    /* Render 2: WITH bloom. */
+    fx.bloom = saved_bloom;  /* re-enable dispatch in the helper */
+    fx.post = pb_pbr_post_pass_create(
+        &(pb_pbr_post_pass_desc){
+            .context = ctx, .render_pass = fx.ldr_render_pass,
+            .vert_spv_path = post_vert, .frag_spv_path = post_frag,
+            .exposure = 1.0f,
+            .bloom_pass = saved_bloom,
+            .bloom_intensity = 1.0f,
+        });
+    PB_ASSERT(fx.post != NULL);
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_bloom_frame, &record_ctx));
+    uint8_t with_bloom[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, with_bloom));
+
+    /* The bloom must brighten the center pixel (the bright hotspot's halo
+     * spreads into it). */
+    const int delta =
+        (int)with_bloom[0] + (int)with_bloom[1] + (int)with_bloom[2] -
+        ((int)without_bloom[0] + (int)without_bloom[1] + (int)without_bloom[2]);
+    if (delta <= 0) {
+        fprintf(
+            stderr,
+            "bloom: center pixel not brighter with bloom: "
+            "without=(%u,%u,%u) with=(%u,%u,%u)\n",
+            without_bloom[0], without_bloom[1], without_bloom[2],
+            with_bloom[0], with_bloom[1], with_bloom[2]);
+    }
+    PB_ASSERT(delta > 0);
+
+    destroy_fixture(&fx);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
 typedef struct gltf_sphere_record_ctx {
     pb_sphere_pass *pass;
     gltf_render_fixture *fixture;
@@ -1519,23 +1756,23 @@ static void record_gltf_sphere_frame(VkCommandBuffer cmd, void *user_data)
     gltf_sphere_record_ctx *ctx = user_data;
     gltf_render_fixture *fx = ctx->fixture;
 
-    /* The sphere pass has its own in-shader tonemap, so it renders directly
-     * to the LDR output (no post pass needed for this test). */
-    VkClearValue clears[2] = {
+    /* Phase 15: sphere pass shares pbr_forward.frag (linear HDR). Render into
+     * HDR, then tonemap to LDR for readback. */
+    VkClearValue hdr_clears[2] = {
         { .color = { { 0.02f, 0.02f, 0.025f, 1.0f } } },
         { .depthStencil = { 1.0f, 0 } },
     };
 
-    VkRenderPassBeginInfo rp_begin = {
+    VkRenderPassBeginInfo hdr_begin = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-        .renderPass = fx->ldr_render_pass,
-        .framebuffer = fx->ldr_framebuffer,
+        .renderPass = fx->hdr_render_pass,
+        .framebuffer = fx->hdr_framebuffer,
         .renderArea = { .extent = fx->extent },
         .clearValueCount = 2,
-        .pClearValues = clears,
+        .pClearValues = hdr_clears,
     };
 
-    vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBeginRenderPass(cmd, &hdr_begin, VK_SUBPASS_CONTENTS_INLINE);
     pb_sphere_pass_record_frame(ctx->pass, cmd, fx->extent, ctx->time_seconds);
 
     for (uint32_t draw_index = 0; draw_index < pb_gltf_scene_draw_count(ctx->scene); ++draw_index) {
@@ -1569,6 +1806,33 @@ static void record_gltf_sphere_frame(VkCommandBuffer cmd, void *user_data)
     }
 
     vkCmdEndRenderPass(cmd);
+
+    pb_rhi_texture_transition_layout(
+        cmd,
+        &fx->hdr_color,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        1,
+        1);
+
+    VkRenderPassBeginInfo ldr_begin = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = fx->ldr_render_pass,
+        .framebuffer = fx->ldr_framebuffer,
+        .renderArea = { .extent = fx->extent },
+        .clearValueCount = 0,
+    };
+    vkCmdBeginRenderPass(cmd, &ldr_begin, VK_SUBPASS_CONTENTS_INLINE);
+    pb_pbr_post_pass_record(fx->post, cmd, fx->extent, fx->hdr_color.view, fx->hdr_color.sampler);
+    vkCmdEndRenderPass(cmd);
+
+    pb_rhi_texture_transition_layout(
+        cmd,
+        &fx->hdr_color,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        1,
+        1);
 }
 
 PB_TEST(test_gltf_draw_with_sphere_pass)
@@ -1642,7 +1906,7 @@ PB_TEST(test_gltf_draw_with_sphere_pass)
     pb_sphere_pass *sphere = pb_sphere_pass_create(
         &(pb_sphere_pass_desc){
             .context = ctx,
-            .render_pass = fx.ldr_render_pass,
+            .render_pass = fx.hdr_render_pass,
             .vert_spv_path = vert_spv,
             .frag_spv_path = frag_spv,
             .albedo_texture_path = albedo,
@@ -1656,6 +1920,9 @@ PB_TEST(test_gltf_draw_with_sphere_pass)
         pb_context_destroy(ctx);
         PB_TEST_SKIP("sphere pass create failed");
     }
+
+    fx.post = create_default_post_pass(&fx, 1.2f);
+    PB_ASSERT(fx.post != NULL);
 
     gltf_sphere_record_ctx record_ctx = {
         .pass = sphere,
@@ -1688,5 +1955,6 @@ void pb_run_gltf_render_tests(void)
     PB_RUN_TEST(test_gltf_point_shadow_pixel);
     PB_RUN_TEST(test_gltf_hdr_post_pixel);
     PB_RUN_TEST(test_gltf_auto_exposure);
+    PB_RUN_TEST(test_gltf_bloom_pixel);
     PB_RUN_TEST(test_gltf_draw_with_sphere_pass);
 }

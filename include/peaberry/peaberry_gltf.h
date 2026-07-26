@@ -224,6 +224,7 @@ void pb_pbr_forward_pass_record(
  * `exposure` value (Phase 15.1 backward-compat path — useful for tests). */
 typedef struct pb_pbr_post_pass pb_pbr_post_pass;
 typedef struct pb_pbr_exposure_pass pb_pbr_exposure_pass;
+typedef struct pb_pbr_bloom_pass pb_pbr_bloom_pass;
 
 typedef struct pb_pbr_post_pass_desc {
     pb_context *context;
@@ -232,6 +233,8 @@ typedef struct pb_pbr_post_pass_desc {
     const char *frag_spv_path;   /* resolves to tonemap.frag.spv    */
     float exposure;              /* static fallback if exposure_pass is NULL */
     pb_pbr_exposure_pass *exposure_pass;  /* nullable; Phase 15.2 */
+    pb_pbr_bloom_pass *bloom_pass;        /* nullable; Phase 15.3 */
+    float bloom_intensity;       /* how strongly bloom adds to the scene (default 0.2) */
 } pb_pbr_post_pass_desc;
 
 pb_pbr_post_pass *pb_pbr_post_pass_create(const pb_pbr_post_pass_desc *desc);
@@ -286,5 +289,35 @@ void pb_pbr_exposure_pass_record(
 /* Read the current adapted exposure. Only valid after a recorded frame has
  * completed on the GPU (the UBO is persistently mapped + host coherent). */
 float pb_pbr_exposure_pass_current(pb_pbr_exposure_pass *pass);
+
+/* Phase 15.3 bloom. Each frame the pass downsamples the HDR scene color into a
+ * mip pyramid (compute, Karis soft-threshold bright-pass + tent filter),
+ * upsamples back up (additive blend, 9-tap tent), and leaves the final bloom
+ * in mip 0 of its own R16G16B16A16_SFLOAT texture. The tonemap post pass
+ * composites scene HDR + bloom before ACES (see pb_pbr_post_pass_desc.bloom_pass).
+ *
+ * The pass owns the bloom mip-chain texture (with per-mip storage views), the
+ * two compute pipelines, descriptor sets, and the filter parameters. Call
+ * pb_pbr_bloom_pass_record() every frame between the forward pass (which
+ * writes the HDR color) and the post pass (which composites the bloom). */
+typedef struct pb_pbr_bloom_pass_desc {
+    pb_context *context;
+    const char *downsample_spv_path;  /* resolves to bloom_downsample.comp.spv */
+    const char *upsample_spv_path;    /* resolves to bloom_upsample.comp.spv   */
+
+    uint32_t mip_count;     /* pyramid depth, default 6 (downsample by /2^6) */
+    float threshold;        /* HDR luminance above which pixels bloom, default 1.0 */
+    float spread;           /* upsample blend factor (0..1), default 0.65 */
+} pb_pbr_bloom_pass_desc;
+
+pb_pbr_bloom_pass *pb_pbr_bloom_pass_create(const pb_pbr_bloom_pass_desc *desc);
+void pb_pbr_bloom_pass_destroy(pb_pbr_bloom_pass *pass);
+
+void pb_pbr_bloom_pass_record(
+    pb_pbr_bloom_pass *pass,
+    VkCommandBuffer cmd,
+    VkImageView hdr_scene_view,
+    VkSampler hdr_scene_sampler,
+    VkExtent2D extent);
 
 #endif
