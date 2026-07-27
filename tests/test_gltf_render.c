@@ -1123,6 +1123,133 @@ PB_TEST(test_gltf_multi_light_pixel)
     PB_TEST_PASS();
 }
 
+/* Phase 13.2: a spot light must only illuminate within its cone. Render the
+ * cube twice with the same spot light at the same position: once aimed at the
+ * cube (cone covers it) and once aimed 90° away (cone misses it). The aimed-at
+ * render must be brighter — proving the cone gating works. */
+PB_TEST(test_gltf_spot_light_pixel)
+{
+    char path[512];
+    char vert_spv[512];
+    char frag_spv[512];
+    PB_ASSERT(snprintf(path, sizeof(path), "%s/models/test_cube.gltf", PEABERRY_ASSET_DIR) < (int)sizeof(path));
+    PB_ASSERT(snprintf(vert_spv, sizeof(vert_spv), "%s/pbr_forward.vert.spv", PEABERRY_SHADER_DIR) < (int)sizeof(vert_spv));
+    PB_ASSERT(snprintf(frag_spv, sizeof(frag_spv), "%s/pbr_forward.frag.spv", PEABERRY_SHADER_DIR) < (int)sizeof(frag_spv));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry spot light test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    gltf_render_fixture fx = {0};
+    fx.context = ctx;
+    fx.extent = (VkExtent2D){ 256, 256 };
+
+    if (!create_depth_image(&fx) ||
+        !pb_rhi_texture_create_2d(
+            ctx, fx.extent.width, fx.extent.height, 1,
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            &fx.hdr_color) ||
+        !pb_rhi_texture_create_2d(
+            ctx, fx.extent.width, fx.extent.height, 1,
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            &fx.ldr_color) ||
+        !create_render_passes(&fx) ||
+        !create_framebuffers(&fx)) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("failed to create headless render target");
+    }
+
+    fx.scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    if (!fx.scene) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("test_cube.gltf missing or load failed");
+    }
+
+    fx.pass = pb_pbr_forward_pass_create(
+        &(pb_pbr_forward_pass_desc){
+            .context = ctx,
+            .render_pass = fx.hdr_render_pass,
+            .vert_spv_path = vert_spv,
+            .frag_spv_path = frag_spv,
+            .ibl_shader_dir = PEABERRY_SHADER_DIR,
+            .exposure = 1.2f,
+        });
+    PB_ASSERT(fx.pass != NULL);
+    fx.post = create_default_post_pass(&fx, 1.2f);
+    PB_ASSERT(fx.post != NULL);
+    pb_pbr_forward_pass_set_scene(fx.pass, fx.scene);
+    PB_ASSERT(pb_pbr_forward_pass_scene_is_bound(fx.pass));
+
+    gltf_render_record_ctx record_ctx = { .fixture = &fx, .time_seconds = 0.0f };
+
+    /* Directional at slot 0 (shadow pass requires it). Bright enough to light
+     * the cube dimly so we have a non-black baseline. */
+    pb_light lights[2] = {0};
+    lights[0].type = PB_LIGHT_TYPE_DIRECTIONAL;
+    lights[0].direction[0] = 0.5f; lights[0].direction[1] = 0.8f; lights[0].direction[2] = 0.4f;
+    lights[0].color[0] = 4.0f; lights[0].color[1] = 4.0f; lights[0].color[2] = 4.0f;
+    lights[0].shadow_map_index = UINT32_MAX;
+
+    /* Spot light in front of the cube, ~30° cone. Direction points from light
+     * toward the scene (the cone axis). */
+    lights[1].type = PB_LIGHT_TYPE_SPOT;
+    lights[1].position[0] = 0.0f; lights[1].position[1] = 0.0f; lights[1].position[2] = 2.0f;
+    lights[1].range = 10.0f;
+    lights[1].color[0] = 30.0f; lights[1].color[1] = 30.0f; lights[1].color[2] = 30.0f;
+    lights[1].shadow_map_index = UINT32_MAX;
+    lights[1].spot_inner_angle = 0.2f;   /* ~11° inner */
+    lights[1].spot_outer_angle = 0.5f;   /* ~29° outer */
+
+    /* Render 1: spot aimed AT the cube (direction = toward -Z, into the scene). */
+    lights[1].direction[0] = 0.0f; lights[1].direction[1] = 0.0f; lights[1].direction[2] = -1.0f;
+    pb_pbr_forward_pass_set_lights(fx.pass, lights, 2);
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
+    uint8_t aimed_at[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, aimed_at));
+
+    /* Render 2: spot aimed AWAY from the cube (direction = toward +Z, away). */
+    lights[1].direction[2] = 1.0f;
+    pb_pbr_forward_pass_set_lights(fx.pass, lights, 2);
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
+    uint8_t aimed_away[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, aimed_away));
+
+    /* The aimed-at render must be brighter (cone covers the cube). */
+    const int aimed_lum = aimed_at[0] + aimed_at[1] + aimed_at[2];
+    const int away_lum = aimed_away[0] + aimed_away[1] + aimed_away[2];
+    if (!(aimed_lum > away_lum)) {
+        fprintf(
+            stderr,
+            "spot: aimed-at not brighter than aimed-away: "
+            "aimed_at=(%u,%u,%u) aimed_away=(%u,%u,%u)\n",
+            aimed_at[0], aimed_at[1], aimed_at[2],
+            aimed_away[0], aimed_away[1], aimed_away[2]);
+    }
+    PB_ASSERT(aimed_lum > away_lum);
+
+    destroy_fixture(&fx);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
 /* Phase 14.2: a shadowed point light (shadow_map_index=0) must attenuate
  * fragments that are occluded from the light by geometry. Render the cube
  * twice with the same point light: once with shadow_map_index=UINT32_MAX
@@ -1952,6 +2079,7 @@ void pb_run_gltf_render_tests(void)
     PB_RUN_TEST(test_gltf_forward_pass_pixel);
     PB_RUN_TEST(test_gltf_unlit_material);
     PB_RUN_TEST(test_gltf_multi_light_pixel);
+    PB_RUN_TEST(test_gltf_spot_light_pixel);
     PB_RUN_TEST(test_gltf_point_shadow_pixel);
     PB_RUN_TEST(test_gltf_hdr_post_pixel);
     PB_RUN_TEST(test_gltf_auto_exposure);

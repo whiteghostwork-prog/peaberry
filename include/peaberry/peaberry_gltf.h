@@ -115,6 +115,7 @@ typedef struct pb_pbr_forward_pass pb_pbr_forward_pass;
 typedef enum {
     PB_LIGHT_TYPE_DIRECTIONAL = 0,
     PB_LIGHT_TYPE_POINT       = 1,
+    PB_LIGHT_TYPE_SPOT        = 2,
 } pb_light_type;
 
 enum {
@@ -128,10 +129,16 @@ typedef struct pb_light {
     float direction[3];  /* world-space; for directional/spot, ignored for point */
     uint32_t type;       /* pb_light_type */
     float color[3];      /* linear RGB * intensity */
-    uint32_t shadow_map_index;  /* point lights: <PB_POINT_SHADOW_MAX to claim a cube shadow slot; UINT32_MAX = unshadowed */
+    uint32_t shadow_map_index;  /* point lights: <PB_POINT_SHADOW_MAX ...; UINT32_MAX = unshadowed */
+    /* Spot-light cone angles (radians, half-angles from the cone axis).
+     * spot_inner_angle: full brightness inside this angle.
+     * spot_outer_angle: zero brightness outside this angle (penumbra between).
+     * Unused for directional/point lights. */
+    float spot_inner_angle;
+    float spot_outer_angle;
     /* Pad to 64 bytes to match the GPU-side pb_light_ubo / GLSL std140
-     * struct-array stride. Future fields go in this pad. */
-    float _pad[4];
+     * struct-array stride. */
+    float _pad[2];
 } pb_light;
 
 typedef struct pb_pbr_forward_pass_desc {

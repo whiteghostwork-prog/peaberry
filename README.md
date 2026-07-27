@@ -27,7 +27,9 @@ Application summary: [OPEN_SOURCE_PLAN.md](OPEN_SOURCE_PLAN.md)
 
 Near term: bench polish (ground plane for cast shadows), docs sync, tagged release.
 
-Medium term: path-tracing reference (Phase 18), stress-scene baselines, mikktspace tangents.
+**Forward PBR (VS/FS) stays the default.** Additive Phase 18: spectral path tracing on `VK_KHR_ray_tracing_pipeline` (RGB path tracer first, then Fourier-sRGB + hero-wavelength). Games typically hybridize raster primary + RGB RT lighting; spectral plugs into that lighting path. Vevio targets both workloads as a full GPU.
+
+Also planned: stress-scene baselines, mikktspace tangents, RHI hardening (Phase 19).
 
 More detail: [OPEN_SOURCE_PLAN.md](OPEN_SOURCE_PLAN.md) and [docs/benchmarks.md](docs/benchmarks.md)
 

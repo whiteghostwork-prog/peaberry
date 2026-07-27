@@ -52,9 +52,12 @@ typedef struct pb_light_ubo {
     uint32_t type;
     float color[3];
     uint32_t shadow_map_index;
+    /* Spot-light cone angles (radians). Must match pb_light in peaberry_gltf.h. */
+    float spot_inner_angle;
+    float spot_outer_angle;
     /* Pad to 64 bytes so the C array stride matches std140's struct-array
      * stride rounding (GLSL pb_light is 56 bytes but rounds up to 64). */
-    float _pad[4];
+    float _pad[2];
 } pb_light_ubo;
 
 typedef struct pb_light_list_ubo {

@@ -880,6 +880,8 @@ static pb_light_list_ubo build_light_list_ubo(const struct pb_pbr_forward_pass *
             d->type = s->type;
             memcpy(d->color, s->color, sizeof(s->color));
             d->shadow_map_index = s->shadow_map_index;
+            d->spot_inner_angle = s->spot_inner_angle;
+            d->spot_outer_angle = s->spot_outer_angle;
         }
         out.light_count = n;
     } else {

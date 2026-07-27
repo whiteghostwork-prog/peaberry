@@ -34,6 +34,7 @@ layout(set = 0, binding = 1) uniform Material {
 
 #define PB_LIGHT_TYPE_DIRECTIONAL 0
 #define PB_LIGHT_TYPE_POINT       1
+#define PB_LIGHT_TYPE_SPOT        2
 #define PB_LIGHT_MAX              8
 
 struct pb_light {
@@ -43,7 +44,9 @@ struct pb_light {
     uint  type;
     vec3 color;
     uint  shadow_map_index;   /* < PB_POINT_SHADOW_MAX: claim a cube shadow slot */
-    vec4 _pad;                /* pad to 64 bytes to match the C struct / std140 stride */
+    float spot_inner_angle;   /* Phase 13.2: spot cone inner half-angle (radians) */
+    float spot_outer_angle;   /* Phase 13.2: spot cone outer half-angle (radians) */
+    vec2 _pad;                /* pad to 64 bytes to match the C struct / std140 stride */
 };
 
 layout(set = 0, binding = 13) uniform LightList {
@@ -256,6 +259,19 @@ void main()
         if (light.type == PB_LIGHT_TYPE_DIRECTIONAL) {
             L = normalize(light.direction);
             attenuation = 1.0;
+        } else if (light.type == PB_LIGHT_TYPE_SPOT) {
+            /* Phase 13.2: spot light — point attenuation × angular cone falloff. */
+            vec3 to_light = light.position - v_world_pos;
+            float dist = length(to_light);
+            L = to_light / max(dist, 1e-4);
+            attenuation = point_attenuation(dist, light.range);
+            /* Angular falloff: dot(L, -spot_dir) gives cos(angle from cone
+             * axis). Inside inner cone → 1.0; outside outer cone → 0.0;
+             * smoothstep transitions the penumbra. */
+            float cos_angle = dot(L, normalize(-light.direction));
+            float cos_inner = cos(light.spot_inner_angle);
+            float cos_outer = cos(light.spot_outer_angle);
+            attenuation *= smoothstep(cos_outer, cos_inner, cos_angle);
         } else { /* PB_LIGHT_TYPE_POINT */
             vec3 to_light = light.position - v_world_pos;
             float dist = length(to_light);
