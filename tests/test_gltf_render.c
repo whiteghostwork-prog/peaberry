@@ -2331,6 +2331,34 @@ PB_TEST(test_gltf_emissive_pixel)
     PB_TEST_PASS();
 }
 
+/* Regression: a scene whose ONLY light is a point light (no directional)
+ * must still be lit. The forward shader used to sample the 2D shadow map for
+ * lights[0] regardless of type; a point light in slot 0 has a zero direction
+ * that degenerates the shadow fit, and the garbage lookup zeroed the light's
+ * whole contribution. test_point_only.gltf = test_cube + one overhead point
+ * light; with the bug the center pixel was IBL-dim. */
+PB_TEST(test_gltf_point_only_light_pixel)
+{
+    gltf_render_fixture fx = {0};
+    if (!emissive_pixel_fixture(&fx, "test_point_only.gltf")) {
+        PB_TEST_SKIP("no Vulkan device or test_point_only.gltf missing");
+    }
+
+    gltf_render_record_ctx record_ctx = { .fixture = &fx, .time_seconds = 0.0f };
+    PB_ASSERT(pb_rhi_submit_one_shot(fx.context, record_gltf_frame, &record_ctx));
+    uint8_t pixel[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, pixel));
+
+    const int lum = (int)pixel[0] + (int)pixel[1] + (int)pixel[2];
+    /* IBL-only floor is ~30-60 per channel; the x24 point light must push
+     * the lit face well past that. */
+    PB_ASSERT(lum > 300);
+
+    destroy_fixture(&fx);
+    pb_context_destroy(fx.context);
+    PB_TEST_PASS();
+}
+
 void pb_run_gltf_render_tests(void)
 {
     printf("gltf render tests\n");
@@ -2338,6 +2366,7 @@ void pb_run_gltf_render_tests(void)
     PB_RUN_TEST(test_gltf_forward_pass_pixel);
     PB_RUN_TEST(test_gltf_unlit_material);
     PB_RUN_TEST(test_gltf_emissive_pixel);
+    PB_RUN_TEST(test_gltf_point_only_light_pixel);
     PB_RUN_TEST(test_gltf_multi_light_pixel);
     PB_RUN_TEST(test_gltf_scene_lights_pixel);
     PB_RUN_TEST(test_gltf_spot_light_pixel);

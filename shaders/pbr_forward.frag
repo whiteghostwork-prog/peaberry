@@ -287,12 +287,16 @@ void main()
         vec3 kD;
         vec3 specular = direct_brdf(N, V, L, metallic, roughness, F0, kD);
 
-        /* Shadow factor: directional at slot 0 uses the 2D shadow map; point
-         * lights sample their claimed cube shadow slot (Phase 14.2). Cube
-         * stores normalized linear distance from the light; we compare the
-         * fragment's normalized distance against it. */
+        /* Shadow factor: the slot-0 DIRECTIONAL uses the 2D shadow map (the
+         * map's view/proj are fitted from its direction). Point lights
+         * sample their claimed cube shadow slot (Phase 14.2). Cube stores
+         * normalized linear distance from the light; we compare the
+         * fragment's normalized distance against it. The type check matters:
+         * a scene with no directional puts a point light in slot 0 whose
+         * zero direction degenerates the 2D map fit — sampling it zeroed
+         * that light's entire contribution. */
         float shadow = 1.0;
-        if (i == 0u) {
+        if (i == 0u && light.type == PB_LIGHT_TYPE_DIRECTIONAL) {
             shadow = calc_shadow(v_world_pos, N, L);
         } else if (light.type == PB_LIGHT_TYPE_POINT && light.shadow_map_index < PB_POINT_SHADOW_MAX) {
             vec3 to_frag = v_world_pos - light.position;

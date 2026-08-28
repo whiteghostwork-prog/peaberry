@@ -812,8 +812,14 @@ static void fill_shadow_frame_fields(
 
     /* Directional lives at slot 0 of the light list; it drives the shadow
      * frustum. build_light_list_ubo supplies the default if the caller never
-     * set lights, preserving the legacy behavior. */
+     * set lights, preserving the legacy behavior. A scene with no
+     * directional puts a point light in slot 0 — its direction is unused and
+     * zero, so skip the fit entirely (identity matrices, shadow sampling is
+     * gated on the directional type in the shader). */
     const pb_light_list_ubo lights = build_light_list_ubo(pass);
+    if (lights.light_count == 0 || lights.lights[0].type != PB_LIGHT_TYPE_DIRECTIONAL) {
+        return;
+    }
     const float *light_dir = lights.lights[0].direction;
 
     pb_shadow_light_matrices_fit_aabb(
