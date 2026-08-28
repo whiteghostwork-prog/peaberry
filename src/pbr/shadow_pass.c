@@ -463,14 +463,17 @@ bool pb_shadow_light_matrices_fit_aabb(
     }
 
     const float pad = 0.05f * fmaxf(light_max[0] - light_min[0], light_max[1] - light_min[1]);
+    /* Right-handed view space has the scene at negative Z, but ortho
+     * near/far are positive distances: the closest extent (-max_z) is near,
+     * the farthest (-min_z) is far. */
     pb_mat4_ortho(
         out_light_proj,
         light_min[0] - pad,
         light_max[0] + pad,
         light_min[1] - pad,
         light_max[1] + pad,
-        light_min[2] - pad,
-        light_max[2] + pad);
+        -light_max[2] - pad,
+        -light_min[2] + pad);
 
     return true;
 }

@@ -37,7 +37,8 @@ PB_TEST(test_shadow_light_matrices_fit_aabb)
     PB_ASSERT(fabsf(light_proj[3][3] - 1.0f) < 1e-5f);
     PB_ASSERT(light_proj[0][0] > 0.0f);
     PB_ASSERT(light_proj[1][1] > 0.0f);
-    PB_ASSERT(light_proj[2][2] > 0.0f);
+    /* Right-handed ortho with 0..1 depth scales Z negatively. */
+    PB_ASSERT(light_proj[2][2] < 0.0f);
 
     PB_TEST_PASS();
 }

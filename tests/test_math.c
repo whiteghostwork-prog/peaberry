@@ -65,7 +65,9 @@ PB_TEST(test_mat4_perspective)
     PB_ASSERT(isfinite(mat4_element(proj, 0, 0)));
     PB_ASSERT(isfinite(mat4_element(proj, 1, 1)));
     PB_ASSERT(mat4_element(proj, 0, 0) > 0.0f);
-    PB_ASSERT(mat4_element(proj, 1, 1) > 0.0f);
+    /* Vulkan NDC Y points down the screen, so pb_mat4_perspective negates
+     * the Y scale to keep world-up at the top of the framebuffer. */
+    PB_ASSERT(mat4_element(proj, 1, 1) < 0.0f);
     PB_ASSERT(mat4_element(proj, 2, 3) != 0.0f);
     PB_ASSERT(mat4_element(proj, 3, 2) != 0.0f);
     PB_TEST_PASS();

@@ -16,8 +16,12 @@
 
 #include "peaberry/peaberry_math.h"
 
+/* cglm in right-handed mode with Vulkan's 0..1 depth range. The previous
+ * CGLM_FORCE_LEFT_HANDED negated the view side basis (cross(up, forward)
+ * instead of cross(forward, up)), mirroring every rendered frame on X;
+ * combined with Vulkan's Y-down NDC the framebuffer came out 180-degree
+ * rotated. Symmetric test assets masked this since Phase 2.1. */
 #define CGLM_FORCE_DEPTH_ZERO_TO_ONE
-#define CGLM_FORCE_LEFT_HANDED
 #include <cglm/cglm.h>
 
 void pb_mat4_identity(pb_mat4 m)
@@ -33,6 +37,9 @@ void pb_mat4_mul(pb_mat4 a, pb_mat4 b, pb_mat4 out)
 void pb_mat4_perspective(pb_mat4 m, float fovy_rad, float aspect, float near_z, float far_z)
 {
     glm_perspective(fovy_rad, aspect, near_z, far_z, m);
+    /* Vulkan NDC +Y points down the screen; negate the Y scale so world-up
+     * renders at the top of the framebuffer. */
+    m[1][1] = -m[1][1];
 }
 
 void pb_mat4_look_at(
