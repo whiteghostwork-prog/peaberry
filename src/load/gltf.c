@@ -154,7 +154,7 @@ static bool load_material_textures(
         !pb_rhi_texture_create_solid_rgba8(context, mr_default, false, &dst->metallic_roughness) ||
         !pb_rhi_texture_create_solid_rgba8(context, normal_default, false, &dst->normal) ||
         !pb_rhi_texture_create_solid_rgba8(context, white, false, &dst->occlusion) ||
-        !pb_rhi_texture_create_solid_rgba8(context, black, false, &dst->emissive)) {
+        !pb_rhi_texture_create_solid_rgba8(context, white, false, &dst->emissive)) {
         return false;
     }
 

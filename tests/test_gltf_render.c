@@ -2203,12 +2203,141 @@ PB_TEST(test_gltf_scene_lights_pixel)
     PB_TEST_PASS();
 }
 
+/* Shared fixture for single-asset pixel tests: context, 256x256 HDR/LDR
+ * targets, forward + post pass, and the named model bound. Returns false
+ * with *fx zeroed when there is no device; a missing asset leaves fx valid
+ * with fx->scene == NULL so the caller can decide. */
+static bool emissive_pixel_fixture(gltf_render_fixture *fx, const char *model_name)
+{
+    char path[512];
+    char vert_spv[512];
+    char frag_spv[512];
+    /* Plain checks: PB_ASSERT expands to a bare return, invalid here. */
+    if (snprintf(path, sizeof(path), "%s/models/%s", PEABERRY_ASSET_DIR, model_name) >= (int)sizeof(path) ||
+        snprintf(vert_spv, sizeof(vert_spv), "%s/pbr_forward.vert.spv", PEABERRY_SHADER_DIR) >= (int)sizeof(vert_spv) ||
+        snprintf(frag_spv, sizeof(frag_spv), "%s/pbr_forward.frag.spv", PEABERRY_SHADER_DIR) >= (int)sizeof(frag_spv)) {
+        return false;
+    }
+
+    fx->context = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry emissive pixel test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    if (!fx->context || !pb_context_init_headless_device(fx->context)) {
+        pb_context_destroy(fx->context);
+        memset(fx, 0, sizeof(*fx));
+        return false;
+    }
+
+    fx->extent = (VkExtent2D){ 256, 256 };
+    if (!create_depth_image(fx) ||
+        !pb_rhi_texture_create_2d(
+            fx->context,
+            fx->extent.width,
+            fx->extent.height,
+            1,
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            &fx->hdr_color) ||
+        !pb_rhi_texture_create_2d(
+            fx->context,
+            fx->extent.width,
+            fx->extent.height,
+            1,
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            &fx->ldr_color) ||
+        !create_render_passes(fx) ||
+        !create_framebuffers(fx)) {
+        destroy_fixture(fx);
+        pb_context_destroy(fx->context);
+        memset(fx, 0, sizeof(*fx));
+        return false;
+    }
+
+    fx->scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = fx->context,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    fx->pass = pb_pbr_forward_pass_create(
+        &(pb_pbr_forward_pass_desc){
+            .context = fx->context,
+            .render_pass = fx->hdr_render_pass,
+            .vert_spv_path = vert_spv,
+            .frag_spv_path = frag_spv,
+            .ibl_shader_dir = PEABERRY_SHADER_DIR,
+            .exposure = 1.2f,
+        });
+    fx->post = create_default_post_pass(fx, 1.2f);
+    if (!fx->scene || !fx->pass || !fx->post) {
+        destroy_fixture(fx);
+        pb_context_destroy(fx->context);
+        memset(fx, 0, sizeof(*fx));
+        return false;
+    }
+    pb_pbr_forward_pass_set_scene(fx->pass, fx->scene);
+    return true;
+}
+
+/* Phase 16.1 regression: emissiveFactor + KHR_materials_emissive_strength
+ * must contribute on materials WITHOUT an emissiveTexture. The loader used
+ * to bind a solid-black emissive fallback, so factor-only emissive assets
+ * rendered with zero emissive output. test_emissive.gltf is the test_cube
+ * with dark grey albedo and emissive (1.0, 0.5, 0.2) x 4.0; its center pixel
+ * must be brighter than the plain test_cube and keep the orange ratio. */
+PB_TEST(test_gltf_emissive_pixel)
+{
+    gltf_render_fixture fx = {0};
+    if (!emissive_pixel_fixture(&fx, "test_emissive.gltf")) {
+        PB_TEST_SKIP("no Vulkan device or test_emissive.gltf missing");
+    }
+
+    gltf_render_record_ctx record_ctx = { .fixture = &fx, .time_seconds = 0.0f };
+    PB_ASSERT(pb_rhi_submit_one_shot(fx.context, record_gltf_frame, &record_ctx));
+    uint8_t emissive_pixel[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, emissive_pixel));
+
+    const int emissive_lum =
+        (int)emissive_pixel[0] + (int)emissive_pixel[1] + (int)emissive_pixel[2];
+
+    /* Same geometry and lighting without emissive must be dimmer. */
+    gltf_render_fixture plain = {0};
+    if (!emissive_pixel_fixture(&plain, "test_cube.gltf")) {
+        destroy_fixture(&fx);
+        pb_context_destroy(fx.context);
+        PB_TEST_SKIP("test_cube.gltf missing");
+    }
+    gltf_render_record_ctx plain_ctx = { .fixture = &plain, .time_seconds = 0.0f };
+    PB_ASSERT(pb_rhi_submit_one_shot(plain.context, record_gltf_frame, &plain_ctx));
+    uint8_t plain_pixel[4] = {0};
+    PB_ASSERT(read_center_pixel(&plain, plain_pixel));
+    const int plain_lum =
+        (int)plain_pixel[0] + (int)plain_pixel[1] + (int)plain_pixel[2];
+
+    PB_ASSERT(emissive_lum > plain_lum + 100);
+    /* Orange emissive signature: R > G > B (the grey albedo under white
+     * light alone would keep R == G == B). */
+    PB_ASSERT(emissive_pixel[0] > emissive_pixel[1]);
+    PB_ASSERT(emissive_pixel[1] > emissive_pixel[2]);
+
+    destroy_fixture(&plain);
+    destroy_fixture(&fx);
+    pb_context_destroy(plain.context);
+    pb_context_destroy(fx.context);
+    PB_TEST_PASS();
+}
+
 void pb_run_gltf_render_tests(void)
 {
     printf("gltf render tests\n");
     PB_RUN_TEST(test_sphere_forward_pass_pixel);
     PB_RUN_TEST(test_gltf_forward_pass_pixel);
     PB_RUN_TEST(test_gltf_unlit_material);
+    PB_RUN_TEST(test_gltf_emissive_pixel);
     PB_RUN_TEST(test_gltf_multi_light_pixel);
     PB_RUN_TEST(test_gltf_scene_lights_pixel);
     PB_RUN_TEST(test_gltf_spot_light_pixel);
