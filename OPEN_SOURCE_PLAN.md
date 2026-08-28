@@ -51,7 +51,7 @@ The research question is not “can an agent write any code,” but **can agents
 | Ray tracing (Phase 12) | Removed — single-bounce `rayQuery` reflections were a dead-end bet. Superseded by Phase 18, which is now a **ray-tracing-pipeline spectral path tracer** |
 | Spectral rendering | **Gap (additive track)** — RGB-only forward path; no wavelength-resolved light transport (blocks dispersion, iridescence, fluorence, true color fidelity). Phase 18 |
 | Path tracing | **Gap** — no acceleration structures, no ray shaders, no stochastic sampling, no accumulation buffer. Phase 18 |
-| Lighting — multi-light | Done (Phase 13.1/13.2) — 1 directional + up to 8 punctual, point and spot. **Gap** — no `KHR_lights_punctual` loader support (13.3), so lights are API-set only |
+| Lighting — multi-light | Done (Phase 13.1/13.2) — 1 directional + up to 8 punctual, point and spot. `KHR_lights_punctual` loaded from glTF scenes (13.3, done) — scene lights flow into the forward pass automatically and animate with their nodes. **Gap** — no per-light enable/shadow toggles (13.4) |
 | Shadows | Directional 1024² PCF + cube/omni maps for point lights (14.2, done). **Gap** — no cascades (CSM), no PCSS |
 | Post-processing | HDR offscreen + ACES tonemap (15.1, done); auto-exposure via luminance histogram + temporal adaptation (15.2, done); bloom (15.3, done). **Gap** — no SSAO/TAA |
 | glTF material extensions | `KHR_materials_unlit` + `_emissive_strength` done (16.1). **Gap** — `_clearcoat/_sheen/_transmission/_volume/_ior/_specular/_iridescence/_anisotropy` unsupported |
@@ -98,10 +98,10 @@ New tracks addressing the gaps that currently keep peaberry from reading as a co
 
 | Sub | Goal | Owner |
 |-----|------|-------|
-| 13.1 | Light-list UBO + shader light loop (1 directional + N point) | peaberry |
+| 13.1 | Light-list UBO + shader light loop (1 directional + N point) — *done* | peaberry |
 | 13.2 | Spot lights (cone + penumbra) — *done* | peaberry |
-| 13.3 | `KHR_lights_punctual` loader support | peaberry |
-| 13.4 | Public light-setter API + per-light enable/shadow toggles | peaberry |
+| 13.3 | `KHR_lights_punctual` loader support — *done* (scene lights flow into the pass automatically; getters expose world-space position/direction per frame) | peaberry |
+| 13.4 | Per-light enable/shadow toggles (public light-setter API landed with 13.1) | peaberry |
 | —   | Multi-light demo scene | espresso |
 
 ### Phase 14 — Shadow quality  *(core)*

@@ -2072,6 +2072,137 @@ PB_TEST(test_gltf_draw_with_sphere_pass)
     PB_TEST_PASS();
 }
 
+/* Phase 13.3: scene lights from KHR_lights_punctual must reach the forward
+ * pass automatically. Render without set_lights, then with the same lights
+ * staged manually via the getters; pixels must match. Overriding with the
+ * legacy default directional must change the image. */
+PB_TEST(test_gltf_scene_lights_pixel)
+{
+    char path[512];
+    char vert_spv[512];
+    char frag_spv[512];
+    PB_ASSERT(snprintf(path, sizeof(path), "%s/models/test_lights.gltf", PEABERRY_ASSET_DIR) < (int)sizeof(path));
+    PB_ASSERT(snprintf(vert_spv, sizeof(vert_spv), "%s/pbr_forward.vert.spv", PEABERRY_SHADER_DIR) < (int)sizeof(vert_spv));
+    PB_ASSERT(snprintf(frag_spv, sizeof(frag_spv), "%s/pbr_forward.frag.spv", PEABERRY_SHADER_DIR) < (int)sizeof(frag_spv));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry scene lights pixel test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    gltf_render_fixture fx = {0};
+    fx.context = ctx;
+    fx.extent = (VkExtent2D){ 256, 256 };
+
+    if (!create_depth_image(&fx) ||
+        !pb_rhi_texture_create_2d(
+            ctx,
+            fx.extent.width,
+            fx.extent.height,
+            1,
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            &fx.hdr_color) ||
+        !pb_rhi_texture_create_2d(
+            ctx,
+            fx.extent.width,
+            fx.extent.height,
+            1,
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            &fx.ldr_color) ||
+        !create_render_passes(&fx) ||
+        !create_framebuffers(&fx)) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("failed to create headless render target");
+    }
+
+    fx.scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    if (!fx.scene) {
+        destroy_fixture(&fx);
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("test_lights.gltf missing or load failed");
+    }
+
+    fx.pass = pb_pbr_forward_pass_create(
+        &(pb_pbr_forward_pass_desc){
+            .context = ctx,
+            .render_pass = fx.hdr_render_pass,
+            .vert_spv_path = vert_spv,
+            .frag_spv_path = frag_spv,
+            .ibl_shader_dir = PEABERRY_SHADER_DIR,
+            .exposure = 1.2f,
+        });
+    PB_ASSERT(fx.pass != NULL);
+    fx.post = create_default_post_pass(&fx, 1.2f);
+    PB_ASSERT(fx.post != NULL);
+    pb_pbr_forward_pass_set_scene(fx.pass, fx.scene);
+    PB_ASSERT(pb_pbr_forward_pass_scene_is_bound(fx.pass));
+
+    gltf_render_record_ctx record_ctx = { .fixture = &fx, .time_seconds = 0.0f };
+
+    /* Auto path: scene lights, no set_lights. */
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
+    uint8_t auto_pixel[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, auto_pixel));
+
+    /* Manual path: same lights staged explicitly via getters. */
+    const uint32_t light_count = pb_gltf_scene_light_count(fx.scene);
+    PB_ASSERT(light_count > 0);
+    pb_light manual_lights[PB_LIGHT_MAX] = {0};
+    for (uint32_t i = 0; i < light_count; ++i) {
+        PB_ASSERT(pb_gltf_scene_get_light(fx.scene, i, &manual_lights[i]));
+    }
+    pb_pbr_forward_pass_set_lights(fx.pass, manual_lights, light_count);
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
+    uint8_t manual_pixel[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, manual_pixel));
+
+    PB_ASSERT(auto_pixel[0] == manual_pixel[0]);
+    PB_ASSERT(auto_pixel[1] == manual_pixel[1]);
+    PB_ASSERT(auto_pixel[2] == manual_pixel[2]);
+    PB_ASSERT(auto_pixel[3] == manual_pixel[3]);
+
+    /* Legacy override must differ from the scene-lit auto path. */
+    pb_light legacy[1] = {0};
+    legacy[0].type = PB_LIGHT_TYPE_DIRECTIONAL;
+    legacy[0].direction[0] = 0.5f;
+    legacy[0].direction[1] = 0.8f;
+    legacy[0].direction[2] = 0.4f;
+    legacy[0].color[0] = 4.0f;
+    legacy[0].color[1] = 4.0f;
+    legacy[0].color[2] = 4.0f;
+    legacy[0].shadow_map_index = UINT32_MAX;
+    pb_pbr_forward_pass_set_lights(fx.pass, legacy, 1);
+    PB_ASSERT(pb_rhi_submit_one_shot(ctx, record_gltf_frame, &record_ctx));
+    uint8_t legacy_pixel[4] = {0};
+    PB_ASSERT(read_center_pixel(&fx, legacy_pixel));
+
+    const int delta =
+        abs((int)auto_pixel[0] - (int)legacy_pixel[0]) +
+        abs((int)auto_pixel[1] - (int)legacy_pixel[1]) +
+        abs((int)auto_pixel[2] - (int)legacy_pixel[2]);
+    PB_ASSERT(delta > 0);
+
+    destroy_fixture(&fx);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
 void pb_run_gltf_render_tests(void)
 {
     printf("gltf render tests\n");
@@ -2079,6 +2210,7 @@ void pb_run_gltf_render_tests(void)
     PB_RUN_TEST(test_gltf_forward_pass_pixel);
     PB_RUN_TEST(test_gltf_unlit_material);
     PB_RUN_TEST(test_gltf_multi_light_pixel);
+    PB_RUN_TEST(test_gltf_scene_lights_pixel);
     PB_RUN_TEST(test_gltf_spot_light_pixel);
     PB_RUN_TEST(test_gltf_point_shadow_pixel);
     PB_RUN_TEST(test_gltf_hdr_post_pixel);

@@ -7,6 +7,7 @@
 
 #include "core/log.h"
 #include "load/tangent.h"
+#include "peaberry/peaberry_math.h"
 #include "pbr/gltf_scene_internal.h"
 #include "pbr/vertex.h"
 #include "rhi/mesh.h"
@@ -618,6 +619,156 @@ static bool collect_scene_draws(
     return scene->draw_count > 0;
 }
 
+static uint32_t map_cgltf_light_type(cgltf_light_type type)
+{
+    switch (type) {
+    case cgltf_light_type_directional:
+        return PB_LIGHT_TYPE_DIRECTIONAL;
+    case cgltf_light_type_point:
+        return PB_LIGHT_TYPE_POINT;
+    case cgltf_light_type_spot:
+        return PB_LIGHT_TYPE_SPOT;
+    default:
+        return PB_LIGHT_TYPE_POINT;
+    }
+}
+
+static void copy_cgltf_light_def(const cgltf_light *src, pb_light *dst)
+{
+    memset(dst, 0, sizeof(*dst));
+    dst->color[0] = src->color[0] * src->intensity;
+    dst->color[1] = src->color[1] * src->intensity;
+    dst->color[2] = src->color[2] * src->intensity;
+    dst->range = src->range;
+    dst->type = map_cgltf_light_type(src->type);
+    dst->shadow_map_index = UINT32_MAX;
+    dst->spot_inner_angle = src->spot_inner_cone_angle;
+    dst->spot_outer_angle = src->spot_outer_cone_angle;
+}
+
+typedef struct pb_gltf_light_collect_ctx {
+    const cgltf_data *data;
+    pb_gltf_scene_light *scratch;
+    uint32_t scratch_count;
+    uint32_t scratch_capacity;
+} pb_gltf_light_collect_ctx;
+
+static void collect_node_lights(const cgltf_node *node, pb_gltf_light_collect_ctx *ctx)
+{
+    if (!node || !ctx) {
+        return;
+    }
+
+    if (node->light) {
+        const uint32_t node_index = (uint32_t)cgltf_node_index(ctx->data, node);
+        if (ctx->scratch_count >= ctx->scratch_capacity) {
+            const uint32_t new_cap = ctx->scratch_capacity == 0 ? 8 : ctx->scratch_capacity * 2;
+            pb_gltf_scene_light *grown =
+                realloc(ctx->scratch, (size_t)new_cap * sizeof(*ctx->scratch));
+            if (!grown) {
+                return;
+            }
+            ctx->scratch = grown;
+            ctx->scratch_capacity = new_cap;
+        }
+
+        pb_gltf_scene_light *entry = &ctx->scratch[ctx->scratch_count++];
+        entry->node_index = node_index;
+        copy_cgltf_light_def(node->light, &entry->def);
+    }
+
+    for (cgltf_size i = 0; i < node->children_count; ++i) {
+        collect_node_lights(node->children[i], ctx);
+    }
+}
+
+static void finalize_scene_lights(pb_gltf_scene *scene, pb_gltf_scene_light *scratch, uint32_t count)
+{
+    if (count == 0) {
+        free(scratch);
+        return;
+    }
+
+    uint32_t total = count;
+    if (total > PB_LIGHT_MAX) {
+        pb_log_warn(
+            "glTF scene has %u lights; clamping to PB_LIGHT_MAX (%u)",
+            total,
+            PB_LIGHT_MAX);
+        total = PB_LIGHT_MAX;
+    }
+
+    scene->lights = calloc(total, sizeof(*scene->lights));
+    if (!scene->lights) {
+        free(scratch);
+        return;
+    }
+
+    uint32_t out = 0;
+    for (uint32_t i = 0; i < count && out < total; ++i) {
+        if (scratch[i].def.type == PB_LIGHT_TYPE_DIRECTIONAL) {
+            scene->lights[out++] = scratch[i];
+        }
+    }
+    for (uint32_t i = 0; i < count && out < total; ++i) {
+        if (scratch[i].def.type != PB_LIGHT_TYPE_DIRECTIONAL) {
+            scene->lights[out++] = scratch[i];
+        }
+    }
+    scene->light_count = out;
+    free(scratch);
+}
+
+static void collect_scene_lights(
+    const cgltf_data *data,
+    const cgltf_scene *gltf_scene,
+    pb_gltf_scene *scene)
+{
+    if (!data || !gltf_scene || !scene) {
+        return;
+    }
+
+    pb_gltf_light_collect_ctx ctx = {0};
+    ctx.data = data;
+
+    for (cgltf_size i = 0; i < gltf_scene->nodes_count; ++i) {
+        collect_node_lights(gltf_scene->nodes[i], &ctx);
+    }
+
+    finalize_scene_lights(scene, ctx.scratch, ctx.scratch_count);
+}
+
+static void derive_light_transform(const pb_gltf_node *node, pb_light *light)
+{
+    if (light->type == PB_LIGHT_TYPE_POINT || light->type == PB_LIGHT_TYPE_SPOT) {
+        light->position[0] = node->world[3][0];
+        light->position[1] = node->world[3][1];
+        light->position[2] = node->world[3][2];
+    }
+
+    /* pb_mat4 is [column][row], so the node's +Z axis in world space is
+     * (world[2][0], world[2][1], world[2][2]) and glTF lights shine along
+     * node -Z. The shader wants a to-light vector for directionals (it
+     * normalizes light.direction straight into L, like the legacy default),
+     * but the propagation axis for spots (the cone code dots L against
+     * -light.direction) — hence the per-type sign. */
+    if (light->type == PB_LIGHT_TYPE_DIRECTIONAL) {
+        pb_vec3 to_light = {
+            node->world[2][0],
+            node->world[2][1],
+            node->world[2][2],
+        };
+        pb_vec3_normalize(to_light, light->direction);
+    } else if (light->type == PB_LIGHT_TYPE_SPOT) {
+        pb_vec3 forward = {
+            -node->world[2][0],
+            -node->world[2][1],
+            -node->world[2][2],
+        };
+        pb_vec3_normalize(forward, light->direction);
+    }
+}
+
 bool pb_gltf_file_scene_count(const char *path, uint32_t *out_count)
 {
     if (!path || !out_count) {
@@ -735,6 +886,13 @@ pb_gltf_scene *pb_gltf_scene_create(const pb_gltf_scene_desc *desc)
     pb_gltf_scene_sync_node_transforms(scene);
     pb_gltf_scene_sync_draw_worlds(scene);
 
+    {
+        const cgltf_scene *lights_scene = resolve_gltf_scene(data, scene->scene_index);
+        if (lights_scene) {
+            collect_scene_lights(data, lights_scene, scene);
+        }
+    }
+
     if (!pb_gltf_scene_init_skin_resources(scene)) {
         pb_log_error("Failed to initialize glTF skin resources: %s", desc->path);
         pb_gltf_scene_destroy(scene);
@@ -745,10 +903,11 @@ pb_gltf_scene *pb_gltf_scene_create(const pb_gltf_scene_desc *desc)
     cgltf_free(data);
 
     pb_log_info(
-        "Loaded glTF scene %u: %u draws, %u materials",
+        "Loaded glTF scene %u: %u draws, %u materials, %u lights",
         scene->scene_index,
         scene->draw_count,
-        scene->material_count);
+        scene->material_count,
+        scene->light_count);
     return scene;
 }
 
@@ -780,6 +939,9 @@ void pb_gltf_scene_destroy(pb_gltf_scene *scene)
 
     free(scene->draws);
     free(scene->materials);
+    free(scene->lights);
+    scene->lights = NULL;
+    scene->light_count = 0;
     pb_rhi_buffer_destroy(context, &scene->skin_palette_buffer);
     pb_gltf_scene_free_nodes_and_animations(scene);
     free(scene);
@@ -901,5 +1063,26 @@ bool pb_gltf_scene_material_info(
     out->alpha_cutoff = material->material_data.alpha_cutoff;
     out->base_color_alpha = material->material_data.base_color_alpha;
     out->double_sided = material->double_sided;
+    return true;
+}
+
+uint32_t pb_gltf_scene_light_count(const pb_gltf_scene *scene)
+{
+    return scene ? scene->light_count : 0;
+}
+
+bool pb_gltf_scene_get_light(const pb_gltf_scene *scene, uint32_t light_index, pb_light *out)
+{
+    if (!scene || !out || light_index >= scene->light_count) {
+        return false;
+    }
+
+    const pb_gltf_scene_light *entry = &scene->lights[light_index];
+    if (entry->node_index >= scene->node_count) {
+        return false;
+    }
+
+    *out = entry->def;
+    derive_light_transform(&scene->nodes[entry->node_index], out);
     return true;
 }

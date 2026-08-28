@@ -141,6 +141,14 @@ typedef struct pb_light {
     float _pad[2];
 } pb_light;
 
+/* KHR_lights_punctual: lights attached to nodes in the active scene. Static
+ * fields (type, color*intensity, range, cone angles) are copied at load;
+ * position and direction are derived from the owning node's current world
+ * matrix when queried. */
+uint32_t pb_gltf_scene_light_count(const pb_gltf_scene *scene);
+
+bool pb_gltf_scene_get_light(const pb_gltf_scene *scene, uint32_t light_index, pb_light *out);
+
 typedef struct pb_pbr_forward_pass_desc {
     pb_context *context;
     VkRenderPass render_pass;
@@ -167,9 +175,9 @@ void pb_pbr_forward_pass_set_camera(
     const float camera_pos[3]);
 
 /* Upload a light list. lights[0] must be the directional (its direction drives
- * the shadow map). Pass count=0 (or NULL) to restore the default single
- * directional light so scenes render lit without explicit setup. count is
- * clamped to PB_LIGHT_MAX. */
+ * the shadow map). Pass count=0 (or NULL) to clear an external override: the
+ * pass then uses scene lights from KHR_lights_punctual when present, otherwise
+ * the legacy default single directional. count is clamped to PB_LIGHT_MAX. */
 void pb_pbr_forward_pass_set_lights(
     pb_pbr_forward_pass *pass,
     const pb_light *lights,

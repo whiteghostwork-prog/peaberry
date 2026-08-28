@@ -414,6 +414,76 @@ PB_TEST(test_gltf_skinning)
     PB_TEST_PASS();
 }
 
+/* Phase 13.3: KHR_lights_punctual lights load with static fields copied and
+ * world-space direction derived from the owning node's transform. */
+PB_TEST(test_gltf_lights_load)
+{
+    char path[512];
+    const int path_len = snprintf(path, sizeof(path), "%s/models/test_lights.gltf", PEABERRY_ASSET_DIR);
+    PB_ASSERT(path_len >= 0 && path_len < (int)sizeof(path));
+
+    pb_context *ctx = pb_context_create(
+        &(pb_context_desc){
+            .app_name = "peaberry gltf lights test",
+            .enable_validation = false,
+            .enable_surface = false,
+        });
+    PB_ASSERT(ctx != NULL);
+
+    if (!pb_context_init_headless_device(ctx)) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("no Vulkan device");
+    }
+
+    pb_gltf_scene *scene = pb_gltf_scene_create(
+        &(pb_gltf_scene_desc){
+            .context = ctx,
+            .path = path,
+            .scene_index = PB_GLTF_SCENE_INDEX_DEFAULT,
+        });
+    if (!scene) {
+        pb_context_destroy(ctx);
+        PB_TEST_SKIP("test_lights.gltf missing or load failed");
+    }
+
+    PB_ASSERT(pb_gltf_scene_light_count(scene) == 2);
+
+    pb_light directional = {0};
+    PB_ASSERT(pb_gltf_scene_get_light(scene, 0, &directional));
+    PB_ASSERT(directional.type == PB_LIGHT_TYPE_DIRECTIONAL);
+    PB_ASSERT_FLOAT_EQ(directional.color[0], 2.0f, 1e-4f);
+    PB_ASSERT_FLOAT_EQ(directional.color[1], 2.0f, 1e-4f);
+    PB_ASSERT_FLOAT_EQ(directional.color[2], 2.0f, 1e-4f);
+    PB_ASSERT(directional.shadow_map_index == UINT32_MAX);
+    /* Rx(-90 deg): node -Z (the shining axis) becomes world -Y, so the light
+     * at y=3 shines straight down and the to-light vector is world +Y. */
+    PB_ASSERT_FLOAT_EQ(directional.direction[0], 0.0f, 1e-3f);
+    PB_ASSERT_FLOAT_EQ(directional.direction[1], 1.0f, 1e-3f);
+    PB_ASSERT_FLOAT_EQ(directional.direction[2], 0.0f, 1e-3f);
+
+    pb_light spot = {0};
+    PB_ASSERT(pb_gltf_scene_get_light(scene, 1, &spot));
+    PB_ASSERT(spot.type == PB_LIGHT_TYPE_SPOT);
+    PB_ASSERT_FLOAT_EQ(spot.color[0], 3.0f, 1e-4f);
+    PB_ASSERT_FLOAT_EQ(spot.color[1], 12.0f, 1e-4f);
+    PB_ASSERT_FLOAT_EQ(spot.color[2], 15.0f, 1e-4f);
+    PB_ASSERT_FLOAT_EQ(spot.range, 10.0f, 1e-4f);
+    PB_ASSERT_FLOAT_EQ(spot.spot_inner_angle, 0.3f, 1e-4f);
+    PB_ASSERT_FLOAT_EQ(spot.spot_outer_angle, 0.5f, 1e-4f);
+    PB_ASSERT_FLOAT_EQ(spot.position[0], 0.0f, 1e-3f);
+    PB_ASSERT_FLOAT_EQ(spot.position[1], 1.8f, 1e-3f);
+    PB_ASSERT_FLOAT_EQ(spot.position[2], 2.8f, 1e-3f);
+    /* The node aims node -Z at (0,0,0.5): the propagation axis is
+     * normalize((0,0,0.5) - (0,1.8,2.8)). */
+    PB_ASSERT_FLOAT_EQ(spot.direction[0], 0.0f, 1e-3f);
+    PB_ASSERT_FLOAT_EQ(spot.direction[1], -0.61631f, 1e-3f);
+    PB_ASSERT_FLOAT_EQ(spot.direction[2], -0.78751f, 1e-3f);
+
+    pb_gltf_scene_destroy(scene);
+    pb_context_destroy(ctx);
+    PB_TEST_PASS();
+}
+
 /* Phase 9.6: the mikktspace generator must produce an orthonormal tangent
  * basis whose handedness is recoverable from tangent.w. Build a flat XY quad
  * with UV.u mapped to +X and UV.v to +Y; the tangent should align with +X and
@@ -470,5 +540,6 @@ void pb_run_gltf_tests(void)
     PB_RUN_TEST(test_gltf_texture_transform);
     PB_RUN_TEST(test_gltf_animation);
     PB_RUN_TEST(test_gltf_skinning);
+    PB_RUN_TEST(test_gltf_lights_load);
     PB_RUN_TEST(test_gltf_generated_tangents);
 }

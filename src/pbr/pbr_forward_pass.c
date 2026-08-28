@@ -884,6 +884,25 @@ static pb_light_list_ubo build_light_list_ubo(const struct pb_pbr_forward_pass *
             d->spot_outer_angle = s->spot_outer_angle;
         }
         out.light_count = n;
+    } else if (pass->scene && pb_gltf_scene_light_count(pass->scene) > 0) {
+        const uint32_t scene_count = pb_gltf_scene_light_count(pass->scene);
+        const uint32_t n = scene_count > PB_LIGHT_MAX ? PB_LIGHT_MAX : scene_count;
+        for (uint32_t i = 0; i < n; ++i) {
+            pb_light light = {0};
+            if (!pb_gltf_scene_get_light(pass->scene, i, &light)) {
+                continue;
+            }
+            pb_light_ubo *d = &out.lights[i];
+            memcpy(d->position, light.position, sizeof(light.position));
+            d->range = light.range;
+            memcpy(d->direction, light.direction, sizeof(light.direction));
+            d->type = light.type;
+            memcpy(d->color, light.color, sizeof(light.color));
+            d->shadow_map_index = light.shadow_map_index;
+            d->spot_inner_angle = light.spot_inner_angle;
+            d->spot_outer_angle = light.spot_outer_angle;
+        }
+        out.light_count = n;
     } else {
         /* Legacy default: one directional, dir (0.5,0.8,0.4), color (4,4,4). */
         out.lights[0].direction[0] = 0.5f;

@@ -300,13 +300,16 @@ int main(int argc, char **argv)
         pb_pbr_forward_pass_set_camera(fx.pass, view, proj, eye);
     }
 
-    /* Match the viewer's default directional light. */
-    pb_light light = {0};
-    light.type = PB_LIGHT_TYPE_DIRECTIONAL;
-    light.direction[0] = 0.5f; light.direction[1] = 0.8f; light.direction[2] = 0.4f;
-    light.color[0] = 4.0f; light.color[1] = 4.0f; light.color[2] = 4.0f;
-    light.shadow_map_index = UINT32_MAX;
-    pb_pbr_forward_pass_set_lights(fx.pass, &light, 1);
+    /* Match the viewer's default directional light — but defer to lights the
+     * glTF scene defines via KHR_lights_punctual (Phase 13.3). */
+    if (pb_gltf_scene_light_count(fx.scene) == 0) {
+        pb_light light = {0};
+        light.type = PB_LIGHT_TYPE_DIRECTIONAL;
+        light.direction[0] = 0.5f; light.direction[1] = 0.8f; light.direction[2] = 0.4f;
+        light.color[0] = 4.0f; light.color[1] = 4.0f; light.color[2] = 4.0f;
+        light.shadow_map_index = UINT32_MAX;
+        pb_pbr_forward_pass_set_lights(fx.pass, &light, 1);
+    }
     pb_pbr_forward_pass_set_shadows_enabled(fx.pass, use_shadows);
     pb_pbr_forward_pass_set_frustum_culling_enabled(fx.pass, false);
     pb_pbr_forward_pass_set_ibl_intensity(fx.pass, getenv("PB_IBL") ? atof(getenv("PB_IBL")) : 0.3f);

@@ -84,6 +84,11 @@ enum {
     PB_GLTF_NO_SKIN = UINT32_MAX,
 };
 
+typedef struct pb_gltf_scene_light {
+    uint32_t node_index;
+    pb_light def;
+} pb_gltf_scene_light;
+
 typedef struct pb_gltf_skin {
     uint32_t *joint_nodes;
     uint32_t joint_count;
@@ -174,6 +179,8 @@ struct pb_gltf_scene {
     size_t skin_palette_bytes;
     pb_rhi_buffer skin_palette_buffer;
     uint32_t frame_slot;
+    pb_gltf_scene_light *lights;
+    uint32_t light_count;
 };
 
 typedef struct pb_pbr_push_constants {
