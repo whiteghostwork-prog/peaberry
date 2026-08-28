@@ -284,17 +284,30 @@ int main(int argc, char **argv)
      * Set DOWNTILT=1 in the env to render from a near-top-down view (reproduces
      * the "background turns white when looking down" auto-exposure failure). */
     {
-        const float az = 0.0f;
+        float az = 0.0f;
         const char *tilt = getenv("PB_CAPTURE_ELEVATION");
-        const float el = tilt ? atof(tilt) : (getenv("PB_CAPTURE_DOWNTILT") ? 1.45f : 0.4f);
-        const float dist = 3.0f;
+        const char *dist_env = getenv("PB_CAPTURE_DISTANCE");
+        const char *path = model;
+        const bool demo_room = path && strstr(path, "demo_room");
+        float el = tilt ? (float)atof(tilt)
+                        : (getenv("PB_CAPTURE_DOWNTILT") ? 1.45f : 0.4f);
+        float dist = dist_env ? (float)atof(dist_env) : 3.0f;
+        float target[3] = {0.0f, 0.0f, 0.0f};
+        if (demo_room) {
+            az = 0.2f;
+            el = tilt ? (float)atof(tilt) : 0.32f;
+            dist = dist_env ? (float)atof(dist_env) : 9.0f;
+            target[0] = 0.0f;
+            target[1] = 0.35f;
+            target[2] = 0.0f;
+        }
         const float eye[3] = {
-            dist * cosf(el) * sinf(az),
-            dist * sinf(el),
-            dist * cosf(el) * cosf(az),
+            target[0] + dist * cosf(el) * sinf(az),
+            target[1] + dist * sinf(el),
+            target[2] + dist * cosf(el) * cosf(az),
         };
         pb_mat4 view, proj;
-        pb_mat4_look_at(view, eye, (float[]){0,0,0}, (float[]){0,1,0});
+        pb_mat4_look_at(view, eye, target, (float[]){0, 1, 0});
         pb_mat4_perspective(proj, pb_radians(45.0f),
             (float)w / (float)h, 0.1f, 100.0f);
         pb_pbr_forward_pass_set_camera(fx.pass, view, proj, eye);
